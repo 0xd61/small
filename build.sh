@@ -7,7 +7,7 @@ curDir=${PWD}
 buildDir="$curDir/../bin"
 
 if [ -z $1 ]; then
-  files=`echo ./{*.cpp,*.c}`
+  files=`ls *.c`
 else
   files=./$1
 fi
