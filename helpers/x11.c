@@ -62,29 +62,6 @@ typedef struct X11Connection
     bool32 Established;
 } X11Connection;
 
-internal size_t
-StringLength(char *String)
-{
-    size_t Count = 0;
-    while(*String++)
-    {
-        Count++;
-    }
-    
-    return(Count);
-}
-
-internal void
-StringCopy(char *Src, size_t SrcCount, char *Dest, size_t DestCount)
-{
-    Assert(SrcSize >= DestSize);
-    
-    for(int index = 0; index < SrcCount; ++index)
-    {
-        *Dest++ = *Src++;
-    }
-}
-
 int main(int argc, char ** argv)
 {
     X11Connection Conn = {};
