@@ -2,73 +2,29 @@
 Tool: Monitor (execute with tmonitor)
 Author  : Daniel Glinka
 
-This tools combines parts of xbacklight and xrandr to control backlight and external screens. It is not a full replacement for these tools.
+This tool combines parts of xbacklight, xrandr and redshift to control backlight, external screens and redshift (night mode). It is not a full replacement for these tools.
 
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
 #include "helpers/types.h"
-
-#include <sys/socket.h>				//Socket related constants
-#include <sys/un.h>					//Unix domain constants
-#include <netinet/in.h>				//Socket related constants
+#include <dirent.h> // dirent, readdir
+#include <fcntl.h> // open, close
+#include <unistd.h> // read, write
 #include <stdio.h>
-#include <unistd.h>
 
-#define false 0;
-#define true 1;
+typedef struct dirent dirent;
 
-typedef struct sockaddr sockaddr;
-typedef struct sockaddr_un sockaddr_un;
-typedef struct sockaddr_in sockaddr_in;
-
-typedef struct X11ConnRequest
+typedef struct backlight_provider
 {
-    uint8  ByteOrder;
-    uint8  _Pad0;
-	uint16 MajorVersion;
-	uint16 MinorVersion;
-	uint16 AuthProtocol;
-	uint16 AuthData;
-	uint8  _Pad1[2];
-} X11ConnRequest;
+    char PathName[4096];
+    real32 Brightness; // In percent (0 to 1)
+    uint32 MaxBrightness;
+} backlight_provider;
 
-typedef struct X11ConnResponse
-{
-    uint8  Status;
-    uint8  ReasonCount;
-    uint16 MajorVersion;
-    uint16 MinorVersion;
-    uint16 Length;
-} X11ConnResponse;
-
-typedef struct X11Setup
-{
-    uint8  Status;
-    uint8  _Pad0;
-    uint16 MajorVersion;
-    uint16 MinorVersion;
-    uint16 Length;
-    uint32 ReleaseNumber;
-    uint32 ResourceIdBase;
-    uint32 ResourceIdMask;
-    uint32 MotionBufferSize;
-    uint16 VendorLength;
-    uint16 MaximumRequestLength;
-    uint8  RootsLength;
-    uint8  PixmapFormatsLength;
-    uint8  ImageByteOrder;
-    uint8  BitmapFormatBitOrder;
-    uint8  BitmapFormatScanlineUnit;
-    uint8  BitmapFormatScanlinePad;
-    uint8  MinKeycode;
-    uint8  MaxKeycode;
-    uint8  _Pad1[4];
-} X11Setup;
-
-typedef struct X11Connection
-{
-    int    Handle;
-    bool32 Established;
-} X11Connection;
+#define ACPI_BACKLIGHT_DIR "/sys/class/backlight/"
+// NOTE(dgl): We prepent the / so we do not have to do another String concat and add it after we get the provider name.
+// If this causes problems we will change it and add append the / to the provider name.
+#define MAX_BRIGHTNESS_FILENAME "/max_brightness"
+#define CURRENT_BRIGHTNESS_FILENAME "/brightness"
 
 internal size_t
 StringLength(char *String)
@@ -85,88 +41,132 @@ StringLength(char *String)
 internal void
 StringCopy(char *Src, size_t SrcCount, char *Dest, size_t DestCount)
 {
-    Assert(SrcSize >= DestSize);
+    // NOTE(dgl): Must be one larger for nullbyte
+    Assert(DestSize > SrcSize);
     
     for(int index = 0; index < SrcCount; ++index)
     {
         *Dest++ = *Src++;
     }
+    *Dest = '\0';
+    
 }
 
-int main(int argc, char ** argv)
+internal void
+StringConcat(char *SrcA, size_t SrcACount, char *SrcB, size_t SrcBCount,
+             char *Dest, size_t DestCount)
 {
-    X11Connection Conn = {};
-    
-#if 1
-    sockaddr_in Socket = {};
-    
-    //Create the socket
-    Conn.Handle = socket(AF_INET, SOCK_STREAM, 0);
-    if (Conn.Handle < 0)
+    Assert(DestCount > SourceACount + SourceBCount);
+    StringCopy(SrcA, SrcACount, Dest, DestCount);
+    StringCopy(SrcB, SrcBCount, Dest + SrcACount, DestCount - SrcACount);
+}
+
+internal uint32
+AToUint32(char *String, size_t StringSize)
+{
+    uint32 Result = 0;
+    for(int Index = 0; Index < StringSize; ++Index)
     {
-        printf("Error opening socket\n");
-        return -1;
+        char Digit = String[Index];
+        Assert((Digit >= '0') && Digit <= '9');
+        uint32 Normalized = (uint32)(Digit - '0');
+        Result = Result * 10 + Normalized;
     }
-    
-    Socket.sin_family = AF_INET;
-    Socket.sin_addr.s_addr=0x0100007f; // localhost (127.0.0.1) in network order (big endian)
-    Socket.sin_port = htons(6001);
-    
-    if(connect(Conn.Handle, (sockaddr *)&Socket, sizeof(Socket)) >= 0)
-#else
-    sockaddr_un Socket = {};
-    
-    //Create the socket
-    Conn.Handle = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (Conn.Handle < 0)
+    return Result;
+}
+
+internal uint32
+ReadUint32FromFile(const char* Path)
+{
+    uint32 Result = 0;
+    int FileHandle = 0;
+    FileHandle = open(Path, O_RDONLY);
+    if(FileHandle > 0)
     {
-        printf("Error opening socket\n");
-        return -1;
-    }
-    
-    Socket.sun_family = AF_UNIX;
-    char *SocketPath = "/tmp/.X11-unix/X0";
-    StringCopy(SocketPath, StringLength(SocketPath), Socket.sun_path, ArrayCount(Socket.sun_path));
-    
-    if(connect(Conn.Handle, (sockaddr *)&Socket, sizeof(Socket)) >= 0)
-#endif
-    {
-        X11ConnRequest Request = {};
-        Request.ByteOrder = 'l'; // Little Endian
-        Request.MajorVersion = 11;
-        Request.MinorVersion = 0;
-        
-        if(write(Conn.Handle, &Request, sizeof(X11ConnRequest)) >= 0)
+        char Buffer[128] = {};
+        size_t ReadCount = 0;
+        read(FileHandle, Buffer, ArrayCount(Buffer));
+        if(ReadCount >= 0)
         {
-            X11ConnResponse Response = {};
-            if(read(Conn.Handle, &Response, sizeof(X11ConnResponse)) >= 0)
+            size_t ReadCount = StringLength(Buffer);
+            
+            // NOTE(dgl): Remove the \n at the end of the value with -1
+            if(Buffer[ReadCount - 1] < '0' || Buffer[ReadCount - 1] > '9')
             {
-                Conn.Established = Response.Status;
-                X11Setup Setup = {};
-                
-                read(Conn.Handle, &Setup, sizeof(X11Setup));
-                
+                ReadCount--;
             }
-            else
-            {
-                // TODO(dgl): logging
-            }
+            
+            Result = AToUint32(Buffer, ReadCount);
         }
         else
         {
+            fprintf(stderr, "Could not read file %s\n", Path);
             // TODO(dgl): logging
-            printf("Could not write to socket\n");
+        }
+        close(FileHandle);
+    }
+    else
+    {
+        fprintf(stderr, "Could not read file %s\n", Path);
+        // TODO(dgl): logging
+    }
+    return(Result);
+}
+
+int main(int argc, char** argv)
+{
+    DIR *BacklightDir = opendir(ACPI_BACKLIGHT_DIR);
+    if(BacklightDir)
+    {
+        dirent *Entry;
+        backlight_provider Providers[32] = {};
+        uint8 ProviderCount = 0;
+        size_t BasePathCount = StringLength(ACPI_BACKLIGHT_DIR);
+        while((Entry = readdir(BacklightDir)))
+        {
+            if(!(Entry->d_name[0] == '.' && Entry->d_name[1] == '\0') &&
+               !(Entry->d_name[0] == '.' && Entry->d_name[1] == '.' && Entry->d_name[2] == '\0'))
+            {
+                backlight_provider *Provider = &Providers[ProviderCount++];
+                Assert(ProviderCount < ArrayCount(Providers));
+                
+                size_t NameCount = StringLength(Entry->d_name);
+                
+                StringConcat(ACPI_BACKLIGHT_DIR, BasePathCount, Entry->d_name, NameCount, Provider->PathName, ArrayCount(Provider->PathName));
+                
+                size_t ProviderPathNameCount = BasePathCount + NameCount;
+                
+                // NOTE(dgl): Getting max brightness for provider
+                char MaxBrightnessPath[4096];
+                size_t MaxBrightnessFileNameCount = StringLength(MAX_BRIGHTNESS_FILENAME);
+                StringConcat(Provider->PathName, ProviderPathNameCount,
+                             MAX_BRIGHTNESS_FILENAME, MaxBrightnessFileNameCount,
+                             MaxBrightnessPath, ArrayCount(MaxBrightnessPath));
+                
+                Provider->MaxBrightness = ReadUint32FromFile(MaxBrightnessPath);
+                
+                // NOTE(dgl): Getting current brightness for provider
+                char CurrentBrightnessPath[4096];
+                size_t CurrentBrightnessFileNameCount = StringLength(CURRENT_BRIGHTNESS_FILENAME);
+                StringConcat(Provider->PathName, ProviderPathNameCount,
+                             CURRENT_BRIGHTNESS_FILENAME, CurrentBrightnessFileNameCount,
+                             CurrentBrightnessPath, ArrayCount(CurrentBrightnessPath));
+                
+                uint32 Brightness = ReadUint32FromFile(CurrentBrightnessPath);
+                Provider->Brightness = ((real32)Brightness / (real32)Provider->MaxBrightness);
+            }
+        }
+        closedir(BacklightDir);
+        
+        for(int Index = 0; Index < ProviderCount; ++Index)
+        {
+            backlight_provider *Provider = &Providers[Index];
+            printf("Provider.Path %s\nProvider.MaxBrightness %d\nProvider.Brightness %f (%d%%)\n", Provider->PathName, Provider->MaxBrightness, Provider->Brightness, (int)(Provider->Brightness * 100));
         }
     }
     else
     {
         // TODO(dgl): logging
-        printf("Could not connect to socket\n");
-    }
-    
-    if(Conn.Established)
-    {
-        
     }
     
     return 0;
