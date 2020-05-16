@@ -71,9 +71,9 @@ StringCompare(char *StringA, char *StringB, size_t StringCount)
 {
     int32 Result = 0;
     int32 Cursor = 0;
-    while(Result == 0 && Cursor < StringCount)
+    while((Result == 0) && (Cursor < StringCount))
     {
-        Result = *StringA - *StringB;
+        Result = *StringA++ - *StringB++;
         Cursor++;
     }
     return Result;
@@ -106,13 +106,13 @@ WriteBrightnessToFile(const char*Path, uint32 Brightness)
     FileHandle = open(Path, O_WRONLY);
     if(FileHandle > 0)
     {
-        size_t WriteCount = 0;
+        ssize_t WriteCount = 0;
         
         // NOTE(dgl): Overkill but who cares
         char Buffer[128] = {};
         UInt32ToA(Brightness, Buffer, ArrayCount(Buffer));
-        write(FileHandle, Buffer, ArrayCount(Buffer));
-        if(WriteCount >= 0)
+        WriteCount = write(FileHandle, Buffer, ArrayCount(Buffer));
+        if(WriteCount <= 0)
         {
             // TODO(dgl): logging
         }
@@ -222,7 +222,7 @@ GetProviderInfo(backlight_provider *Providers, uint32 ProviderCount)
 
 int main(int argc, char** argv)
 {
-    if(argc < 2)
+    if(argc == 1)
     {
         backlight_provider Providers[8] = {};
         
@@ -240,51 +240,62 @@ int main(int argc, char** argv)
             
         }
     }
-    
-    // TODO(dgl): Use cursor to handle more than one arg @@cleanup
-    if(argc >= 2)
+    else
     {
-        char *Arg = argv[1];
-        if(StringCompare(Arg, "-set", 4) == 0)
+        // TODO(dgl): Use cursor to handle more than one arg @@cleanup
+        int cursor = 1;
+        while(cursor < argc)
         {
-            if(argc < 2)
+            char *Arg = argv[cursor];
+            
+            if(StringCompare("-set", Arg, 4) == 0)
             {
-                fprintf(stderr, "Missing brightness percentage after \"-set\".\n");
-                return -1;
-            }
-            
-            backlight_provider Providers[8] = {};
-            
-            uint32 AvailableProviderCount = GetProviderInfo(Providers, ArrayCount(Providers));
-            if(AvailableProviderCount <= 0)
-            {
-                fprintf(stderr, "No backlight provider found.");
-                return -1;
-            }
-            // TODO(dgl): Allow choosing a specific provider
-            backlight_provider *Provider = &Providers[0];
-            
-            char *BrightnessArg = argv[2];
-            size_t ArgLength = StringLength(BrightnessArg);
-            uint32 BrightnessPercent = AToUInt32(BrightnessArg, ArgLength);
-            
-            uint32 Brightness;
-            if(BrightnessPercent < 100)
-            {
-                Brightness = (uint32)(((real32)BrightnessPercent/100) * (real32)Provider->MaxBrightness);
+                if(cursor == argc - 1)
+                {
+                    fprintf(stderr, "Missing brightness percentage after \"-set\".\n");
+                    return -1;
+                }
+                char *BrightnessArg = argv[cursor + 1];
+                
+                backlight_provider Providers[8] = {};
+                
+                uint32 AvailableProviderCount = GetProviderInfo(Providers, ArrayCount(Providers));
+                if(AvailableProviderCount <= 0)
+                {
+                    fprintf(stderr, "No backlight provider found.");
+                    return -1;
+                }
+                // TODO(dgl): Allow choosing a specific provider
+                backlight_provider *Provider = &Providers[0];
+                
+                size_t ArgLength = StringLength(BrightnessArg);
+                uint32 BrightnessPercent = AToUInt32(BrightnessArg, ArgLength);
+                
+                uint32 Brightness;
+                if(BrightnessPercent < 100)
+                {
+                    Brightness = (uint32)(((real32)BrightnessPercent/100) * (real32)Provider->MaxBrightness);
+                }
+                else
+                {
+                    Brightness = Provider->MaxBrightness;
+                }
+                
+                char CurrentBrightnessPath[4096];
+                size_t CurrentBrightnessFileNameCount = StringLength(CURRENT_BRIGHTNESS_FILENAME);
+                StringConcat(Provider->PathName, Provider->PathNameCount,
+                             CURRENT_BRIGHTNESS_FILENAME, CurrentBrightnessFileNameCount,
+                             CurrentBrightnessPath, ArrayCount(CurrentBrightnessPath));
+                
+                WriteBrightnessToFile(CurrentBrightnessPath, Brightness);
+                
+                cursor += 2;
             }
             else
             {
-                Brightness = Provider->MaxBrightness;
+                // TODO(dgl): Print help and exit
+                cursor++;
             }
-            
-            char CurrentBrightnessPath[4096];
-            size_t CurrentBrightnessFileNameCount = StringLength(CURRENT_BRIGHTNESS_FILENAME);
-            StringConcat(Provider->PathName, Provider->PathNameCount,
-                         CURRENT_BRIGHTNESS_FILENAME, CurrentBrightnessFileNameCount,
-                         CurrentBrightnessPath, ArrayCount(CurrentBrightnessPath));
-            
-            WriteBrightnessToFile(CurrentBrightnessPath, Brightness);
         }
     }
     
