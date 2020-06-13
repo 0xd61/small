@@ -19,7 +19,7 @@ CommonCompilerFlags="-O2 -ggdb -fdiagnostics-color=always -fno-rtti -fno-excepti
 -Wno-error=unused-variable -Wno-unused-function"
 
 CommonDefines=""
-CommonLinkerFlags="-Wl,--gc-sections -nostdinc++ -ldl"
+CommonLinkerFlags="-Wl,--gc-sections -nostdinc++ -ldl -lxcb -lxcb-randr"
 
 
 [ -d $buildDir ] || buildDir="$curDir"

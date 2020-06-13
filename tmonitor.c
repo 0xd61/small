@@ -1,25 +1,50 @@
 /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Tool: Monitor (execute with tmonitor)
-Author  : Daniel Glinka
+Author: Daniel Glinka
 
-This tool combines parts of xbacklight, xrandr and redshift to control backlight, external screens and redshift (night mode). It is not a full replacement for these tools.
+This tool combines parts of xbacklight, xrandr and redshift to control backlight, external screens and redshift (night mode). It only provides features necessary for my setup. It is not a full replacement for these tools.
 
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
-#include "helpers/types.h"
+
 #include <dirent.h> // dirent, readdir
 #include <fcntl.h> // open, close
 #include <unistd.h> // read, write
 #include <stdio.h>
 
+// TODO(dgl): Remove xcb deps?
+#include <xcb/xcb.h>
+#include <xcb/randr.h>
+
+#include "helpers/types.h"
+
 typedef struct dirent dirent;
 
-typedef struct backlight_provider
+typedef struct
 {
     char PathName[4096];
     size_t PathNameCount;
     real32 Brightness; // In percent (0 to 1)
     uint32 MaxBrightness;
 } backlight_provider;
+
+// TODO(dgl): Merge connection into screen resources or vice versa? Then we should check on each function if the necessary fields are initialized
+typedef struct
+{
+    xcb_connection_t *Connection;
+} xcb_context;
+
+typedef struct
+{
+    xcb_randr_get_screen_resources_current_reply_t *Screen;
+    xcb_randr_output_t *Outputs;
+    int OutputCount;
+} xcb_screen_resources;
+
+typedef enum
+{
+    AUTOMATIC,
+    OFF
+} xcb_crtc_mode;
 
 #define ACPI_BACKLIGHT_DIR "/sys/class/backlight/"
 // NOTE(dgl): We prepent the / so we do not have to do another String concat and add it after we get the provider name.
@@ -220,6 +245,78 @@ GetProviderInfo(backlight_provider *Providers, uint32 ProviderCount)
     return(Result);
 }
 
+internal void
+SetOutputProperty(xcb_context *Context, xcb_screen_resources *Resources, xcb_randr_output_t Output, char *Propery)
+{
+    
+}
+
+internal void
+SetOutputCrtcMode(xcb_context *Context, xcb_screen_resources *Resources, xcb_randr_output_t Output, xcb_crtc_mode Mode)
+{
+    
+    //xcb_randr_get_crtc_cookie_t CrtcCookie = xcb_randr_get_crtc_info(Context->Connection, OutputInfo->crtc, Resources->timestamp);
+    //xcb_randr_get_crtc_info_reply_t *Crtc = xcb_randr_get_crtc_info_reply(Context->Connection, CrtcCookie, NULL);
+}
+
+internal xcb_randr_output_t
+GetScreenOutputByName(xcb_context *Context, xcb_screen_resources *Resources, char *Name)
+{
+    xcb_randr_output_t Result = 0;
+    
+    for (int Index = 0; 
+         Index < Resources->OutputCount; 
+         ++Index) 
+    {
+        xcb_randr_get_output_info_cookie_t OutputInfoCookie = xcb_randr_get_output_info(Context->Connection, Resources->Outputs[Index], Resources->Screen->config_timestamp);
+        
+        xcb_randr_get_output_info_reply_t *OutputInfo = 
+            xcb_randr_get_output_info_reply(Context->Connection, OutputInfoCookie, NULL);
+        
+        if(OutputInfo)
+        {
+            int OutputNameCount = xcb_randr_get_output_info_name_length(OutputInfo);
+            
+            if(OutputNameCount > 0)
+            {
+                if(OutputNameCount == StringLength(Name))
+                {
+                    char *OutputName = (char *)xcb_randr_get_output_info_name(OutputInfo);
+                    if(StringCompare(OutputName, Name,(size_t) OutputNameCount) == 0)
+                    {
+                        Result = Resources->Outputs[Index];
+                        printf("Outputname: %s\n", OutputName);
+                    }
+                }
+            }
+            else
+            {
+                fprintf(stderr, "Could not fetch name of screen output.\n");
+            }
+        }
+        else
+        {
+            // TODO(dgl): logging
+        }
+    }
+    
+    return(Result);
+}
+
+internal xcb_screen_resources
+GetScreenResources(xcb_context *Context)
+{
+    xcb_screen_resources Result = {};
+    xcb_screen_t *Screen = xcb_setup_roots_iterator(xcb_get_setup(Context->Connection)).data;
+    xcb_randr_get_screen_resources_current_cookie_t ScreenResourcesCookie = xcb_randr_get_screen_resources_current(Context->Connection, Screen->root);
+    
+    Result.Screen = xcb_randr_get_screen_resources_current_reply(Context->Connection, ScreenResourcesCookie, NULL);
+    Result.OutputCount = xcb_randr_get_screen_resources_current_outputs_length(Result.Screen);
+    Result.Outputs = xcb_randr_get_screen_resources_current_outputs(Result.Screen);
+    
+    return(Result);
+}
+
 int main(int argc, char** argv)
 {
     if(argc == 1)
@@ -291,9 +388,50 @@ int main(int argc, char** argv)
                 
                 cursor += 2;
             }
+            else if(StringCompare("-mirror", Arg, 7) == 0)
+            {
+                // NOTE(dgl): we used https://github.com/Airblader/xedgewarp as reference
+                // https://stackoverflow.com/questions/36966900/xcb-get-all-monitors-ands-their-x-y-coordinates
+                
+                xcb_context Context = {};
+                Context.Connection = xcb_connect(NULL, NULL);
+                
+                xcb_screen_resources Resources = GetScreenResources(&Context);
+                
+                xcb_randr_output_t OutputeDP1 = GetScreenOutputByName(&Context, &Resources, "eDP-1");
+                xcb_randr_output_t OutputHDMI1 = GetScreenOutputByName(&Context, &Resources, "HDMI-1");
+                
+                //OutputeDP1->connection == XCB_RANDR_CONNECTION_DISCONNECTED;
+                
+                //SetOutputProperty(OutputHDMI1, "Broadcast RGB");
+                //SetOutputProperty(OutputHDMI1, "Limited 16:235");
+                
+                //SetOutputCRTC(OutputeDP1, AUTOMATIC);
+                //SetOutputCRTC(OutputHDMI1, AUTOMATIC);
+                
+                // TODO(dgl): Somehow we have to do something with these outputs...
+                // xcb_randr_get_output_property ('Broadcast RGB' 'Limited 16:235')
+                // xcb_randr_get_output_info_modes + xcb_randr_get_output_info_modes_length
+                // xcb_randr_set_crtc_config
+                // -off -> crtc none and mode none?!
+                // -auto -> crtc mode automatic?!
+                
+                // NOTE(dgl): We do not free because the programm terminates after executing the necessary commands.
+                // This tool should not be used as long running service.
+                
+                cursor++;
+            }
+            else if(StringCompare("-laptop", Arg, 6) == 0)
+            {
+                cursor++;
+            }
+            else if(StringCompare("-hdmi", Arg, 5) == 0)
+            {
+                cursor++;
+            }
             else
             {
-                // TODO(dgl): Print help and exit
+                // TODO(dgl): Print help/usage and exit
                 cursor++;
             }
         }
