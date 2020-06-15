@@ -31,14 +31,20 @@ typedef struct
 typedef struct
 {
     xcb_connection_t *Connection;
+    xcb_randr_get_screen_resources_current_reply_t *Screen;
+    xcb_randr_output_t *Outputs;
+    int OutputCount;
+    
 } xcb_context;
 
 typedef struct
 {
-    xcb_randr_get_screen_resources_current_reply_t *Screen;
-    xcb_randr_output_t *Outputs;
-    int OutputCount;
-} xcb_screen_resources;
+    xcb_randr_output_t Id;
+    xcb_randr_get_output_info_reply_t *Info;
+    char *Name;
+    size_t NameCount;
+    bool32 IsConnected;
+} xcb_output;
 
 typedef enum
 {
@@ -246,29 +252,105 @@ GetProviderInfo(backlight_provider *Providers, uint32 ProviderCount)
 }
 
 internal void
-SetOutputProperty(xcb_context *Context, xcb_screen_resources *Resources, xcb_randr_output_t Output, char *Propery)
+SetOutputProperty(xcb_context *Context, xcb_output *Output, char *Propery, char *Value)
 {
     
 }
 
 internal void
-SetOutputCrtcMode(xcb_context *Context, xcb_screen_resources *Resources, xcb_randr_output_t Output, xcb_crtc_mode Mode)
+SetOutputCrtcMode(xcb_context *Context, xcb_output *Output, xcb_crtc_mode Mode)
 {
+    if(Output->IsConnected)
+    {
+        if(Mode == AUTOMATIC)
+        {
+            // NOTE(dgl): It looks like the preferred modes are listed at the of the modes list. For reference checkout xrandr: https://gitlab.freedesktop.org/xorg/app/xrandr/-/blob/master/xrandr.c#L3975
+            int OutputModeCount = xcb_randr_get_output_info_modes_length(Output->Info);
+            xcb_randr_mode_t *OutputModes = xcb_randr_get_output_info_modes(Output->Info);
+            for(int Index = 0;
+                Index < OutputModeCount;
+                ++Index)
+            {
+                xcb_randr_mode_t Mode = OutputModes[Index];
+                // TODO(dgl): handle more than one modes and if no preferred mode is available
+                if(Index < Output->Info->num_preferred)
+                {
+                    printf("Set CRTC to auto\n");
+                    // TODO(dgl): If it was  there is not crtc associated with the output.
+                    // I guess we need to query the crtcs and outputs and then combine these.
+                    printf("Output Crtc: %d\n", Output->Info->crtc);
+                    // TODO(dgl): Do we have to do something else?
+                    xcb_randr_set_crtc_config_cookie_t ConfigCookie = xcb_randr_set_crtc_config(Context->Connection, 
+                                                                                                Output->Info->crtc, 
+                                                                                                Context->Screen->timestamp, 
+                                                                                                Context->Screen->config_timestamp, 
+                                                                                                0, 
+                                                                                                0, 
+                                                                                                Mode, 
+                                                                                                XCB_RANDR_ROTATION_ROTATE_0, 
+                                                                                                1, &Output->Id);
+                    
+                    xcb_randr_set_crtc_config_reply_t* ConfigReply = xcb_randr_set_crtc_config_reply(Context->Connection,
+                                                                                                     ConfigCookie,
+                                                                                                     NULL);
+                    
+                    if(ConfigReply)
+                    {
+                        printf("Config Status: %d\n", ConfigReply->status);
+                    }
+                    return;
+                }
+                else 
+                {
+                    fprintf(stderr, "No preferred outputmode found. This case is not yet implemented. Please use \"xrandr --output %.*s --auto\"\n", (int)Output->NameCount, Output->Name);
+                    return;
+                }
+            }
+        }
+        else
+        {
+            printf("Set CRTC to off\n");
+            // TODO(dgl): Do we have to do something else?
+            xcb_randr_set_crtc_config_cookie_t ConfigCookie = xcb_randr_set_crtc_config(Context->Connection, 
+                                                                                        Output->Info->crtc, 
+                                                                                        Context->Screen->timestamp, 
+                                                                                        Context->Screen->config_timestamp, 
+                                                                                        0, 
+                                                                                        0, 
+                                                                                        XCB_NONE, 
+                                                                                        XCB_RANDR_ROTATION_ROTATE_0, 
+                                                                                        0, NULL);
+            
+            xcb_randr_set_crtc_config_reply_t* ConfigReply = xcb_randr_set_crtc_config_reply(Context->Connection,
+                                                                                             ConfigCookie,
+                                                                                             NULL);
+            
+            if(ConfigReply)
+            {
+                printf("Config Status: %d\n", ConfigReply->status);
+            }
+        }
+    }
+    else
+    {
+        fprintf(stderr, "Output %.*s is disconnected\n", (int)Output->NameCount, Output->Name);
+    }
     
-    //xcb_randr_get_crtc_cookie_t CrtcCookie = xcb_randr_get_crtc_info(Context->Connection, OutputInfo->crtc, Resources->timestamp);
-    //xcb_randr_get_crtc_info_reply_t *Crtc = xcb_randr_get_crtc_info_reply(Context->Connection, CrtcCookie, NULL);
 }
 
-internal xcb_randr_output_t
-GetScreenOutputByName(xcb_context *Context, xcb_screen_resources *Resources, char *Name)
+internal xcb_output
+GetScreenOutputByName(xcb_context *Context, char *Name)
 {
-    xcb_randr_output_t Result = 0;
+    xcb_output Result = {};
     
     for (int Index = 0; 
-         Index < Resources->OutputCount; 
+         Index < Context->OutputCount; 
          ++Index) 
     {
-        xcb_randr_get_output_info_cookie_t OutputInfoCookie = xcb_randr_get_output_info(Context->Connection, Resources->Outputs[Index], Resources->Screen->config_timestamp);
+        // NOTE(dgl): Assert if outputs have been fetched
+        Assert(Context->Outputs && Context->Screen);
+        
+        xcb_randr_get_output_info_cookie_t OutputInfoCookie = xcb_randr_get_output_info(Context->Connection, Context->Outputs[Index], Context->Screen->config_timestamp);
         
         xcb_randr_get_output_info_reply_t *OutputInfo = 
             xcb_randr_get_output_info_reply(Context->Connection, OutputInfoCookie, NULL);
@@ -284,7 +366,12 @@ GetScreenOutputByName(xcb_context *Context, xcb_screen_resources *Resources, cha
                     char *OutputName = (char *)xcb_randr_get_output_info_name(OutputInfo);
                     if(StringCompare(OutputName, Name,(size_t) OutputNameCount) == 0)
                     {
-                        Result = Resources->Outputs[Index];
+                        Result.Id = Context->Outputs[Index];
+                        Result.Info = OutputInfo;
+                        Result.Name = OutputName;
+                        Result.NameCount = (size_t)OutputNameCount;
+                        Result.IsConnected = (OutputInfo->connection == XCB_RANDR_CONNECTION_CONNECTED);
+                        
                         printf("Outputname: %s\n", OutputName);
                     }
                 }
@@ -303,14 +390,16 @@ GetScreenOutputByName(xcb_context *Context, xcb_screen_resources *Resources, cha
     return(Result);
 }
 
-internal xcb_screen_resources
-GetScreenResources(xcb_context *Context)
+internal xcb_context
+GetContext()
 {
-    xcb_screen_resources Result = {};
-    xcb_screen_t *Screen = xcb_setup_roots_iterator(xcb_get_setup(Context->Connection)).data;
-    xcb_randr_get_screen_resources_current_cookie_t ScreenResourcesCookie = xcb_randr_get_screen_resources_current(Context->Connection, Screen->root);
+    xcb_context Result = {};
+    Result.Connection = xcb_connect(NULL, NULL);
     
-    Result.Screen = xcb_randr_get_screen_resources_current_reply(Context->Connection, ScreenResourcesCookie, NULL);
+    xcb_screen_t *Screen = xcb_setup_roots_iterator(xcb_get_setup(Result.Connection)).data;
+    xcb_randr_get_screen_resources_current_cookie_t ScreenResourcesCookie = xcb_randr_get_screen_resources_current(Result.Connection, Screen->root);
+    
+    Result.Screen = xcb_randr_get_screen_resources_current_reply(Result.Connection, ScreenResourcesCookie, NULL);
     Result.OutputCount = xcb_randr_get_screen_resources_current_outputs_length(Result.Screen);
     Result.Outputs = xcb_randr_get_screen_resources_current_outputs(Result.Screen);
     
@@ -393,28 +482,21 @@ int main(int argc, char** argv)
                 // NOTE(dgl): we used https://github.com/Airblader/xedgewarp as reference
                 // https://stackoverflow.com/questions/36966900/xcb-get-all-monitors-ands-their-x-y-coordinates
                 
-                xcb_context Context = {};
-                Context.Connection = xcb_connect(NULL, NULL);
+                xcb_context Context = GetContext();
                 
-                xcb_screen_resources Resources = GetScreenResources(&Context);
+                xcb_output OutputeDP1 = GetScreenOutputByName(&Context, "Virtual1");
+                xcb_output OutputHDMI1 = GetScreenOutputByName(&Context, "Virtual2");
                 
-                xcb_randr_output_t OutputeDP1 = GetScreenOutputByName(&Context, &Resources, "eDP-1");
-                xcb_randr_output_t OutputHDMI1 = GetScreenOutputByName(&Context, &Resources, "HDMI-1");
-                
-                //OutputeDP1->connection == XCB_RANDR_CONNECTION_DISCONNECTED;
-                
-                //SetOutputProperty(OutputHDMI1, "Broadcast RGB");
-                //SetOutputProperty(OutputHDMI1, "Limited 16:235");
-                
-                //SetOutputCRTC(OutputeDP1, AUTOMATIC);
-                //SetOutputCRTC(OutputHDMI1, AUTOMATIC);
-                
-                // TODO(dgl): Somehow we have to do something with these outputs...
-                // xcb_randr_get_output_property ('Broadcast RGB' 'Limited 16:235')
-                // xcb_randr_get_output_info_modes + xcb_randr_get_output_info_modes_length
-                // xcb_randr_set_crtc_config
-                // -off -> crtc none and mode none?!
-                // -auto -> crtc mode automatic?!
+                if(OutputeDP1.Id && OutputHDMI1.Id)
+                {
+                    SetOutputProperty(&Context, &OutputHDMI1, "Broadcast RGB", "Limited 16:235");
+                    //SetOutputCrtcMode(&Context, &OutputeDP1, AUTOMATIC);
+                    SetOutputCrtcMode(&Context, &OutputHDMI1, AUTOMATIC);
+                }
+                else
+                {
+                    fprintf(stderr, "Output eDP-1 or HDMI-1 not found. Please check with the xrandr command\n");
+                }
                 
                 // NOTE(dgl): We do not free because the programm terminates after executing the necessary commands.
                 // This tool should not be used as long running service.
@@ -423,6 +505,24 @@ int main(int argc, char** argv)
             }
             else if(StringCompare("-laptop", Arg, 6) == 0)
             {
+                xcb_context Context = GetContext();
+                
+                xcb_output OutputeDP1 = GetScreenOutputByName(&Context, "Virtual1");
+                xcb_output OutputHDMI1 = GetScreenOutputByName(&Context, "Virtual2");
+                
+                if(OutputeDP1.Id && OutputHDMI1.Id)
+                {
+                    //SetOutputCrtcMode(&Context, &OutputeDP1, AUTOMATIC);
+                    SetOutputCrtcMode(&Context, &OutputHDMI1, OFF);
+                }
+                else
+                {
+                    fprintf(stderr, "Output eDP-1 or HDMI-1 not found. Please check with the xrandr command\n");
+                }
+                
+                // NOTE(dgl): We do not free because the programm terminates after executing the necessary commands.
+                // This tool should not be used as long running service.
+                
                 cursor++;
             }
             else if(StringCompare("-hdmi", Arg, 5) == 0)
