@@ -259,117 +259,6 @@ SetOutputProperty(xcb_context *Context, xcb_output *Output, char *Propery, char 
     
 }
 
-internal void
-SetOutputCrtcMode(xcb_context *Context, xcb_output *Output, xcb_crtc_mode Mode)
-{
-    if(Output->IsConnected)
-    {
-        // TODO(dgl): If it was  there is not crtc associated with the output.
-        // I guess we need to query the crtcs and outputs and then combine these.
-        printf("Output Crtc: %d\n", Output->Info->crtc);
-        xcb_randr_crtc_t Crtc;
-        if(Output->Info->crtc)
-        {
-            Crtc = Output->Info->crtc;
-        }
-        else
-        {
-            // TODO(dgl): If no crtc is found for the output we use the first with no outputs assigned.
-            // But something is not right yet. Because changing the crtc config only works the first time. The change returns success but nothing happens.
-            for(int Index = 0;
-                Index < Context->CrtcCount;
-                ++Index)
-            {
-                xcb_randr_get_crtc_info_cookie_t CrtcInfoCookie = xcb_randr_get_crtc_info(Context->Connection,
-                                                                                          Context->Crtcs[Index],
-                                                                                          Context->Screen->config_timestamp);
-                
-                xcb_randr_get_crtc_info_reply_t* CrtcInfo = xcb_randr_get_crtc_info_reply(Context->Connection,
-                                                                                          CrtcInfoCookie,
-                                                                                          NULL);
-                
-                printf("Crtc Mode: %d, Outputs: %d, Possible Outputs %d\n", CrtcInfo->mode, CrtcInfo->num_outputs, CrtcInfo->num_possible_outputs);
-                if(CrtcInfo->num_outputs == 0)
-                {
-                    Crtc = Context->Crtcs[Index];
-                    break;
-                }
-            }
-        }
-        
-        if(Mode == AUTOMATIC)
-        {
-            // NOTE(dgl): It looks like the preferred modes are listed at the of the modes list. For reference checkout xrandr: https://gitlab.freedesktop.org/xorg/app/xrandr/-/blob/master/xrandr.c#L3975
-            int OutputModeCount = xcb_randr_get_output_info_modes_length(Output->Info);
-            xcb_randr_mode_t *OutputModes = xcb_randr_get_output_info_modes(Output->Info);
-            for(int Index = 0;
-                Index < OutputModeCount;
-                ++Index)
-            {
-                xcb_randr_mode_t Mode = OutputModes[Index];
-                // TODO(dgl): handle more than one modes and if no preferred mode is available
-                if(Index < Output->Info->num_preferred)
-                {
-                    printf("Set CRTC to auto\n");
-                    // TODO(dgl): Do we have to do something else?
-                    xcb_randr_set_crtc_config_cookie_t ConfigCookie = xcb_randr_set_crtc_config(Context->Connection, 
-                                                                                                Crtc, 
-                                                                                                Context->Screen->timestamp, 
-                                                                                                Context->Screen->config_timestamp, 
-                                                                                                0, 
-                                                                                                0, 
-                                                                                                Mode, 
-                                                                                                XCB_RANDR_ROTATION_ROTATE_0, 
-                                                                                                1, &Output->Id);
-                    
-                    xcb_randr_set_crtc_config_reply_t* ConfigReply = xcb_randr_set_crtc_config_reply(Context->Connection,
-                                                                                                     ConfigCookie,
-                                                                                                     NULL);
-                    
-                    if(ConfigReply)
-                    {
-                        printf("Config Status: %d\n", ConfigReply->status);
-                    }
-                    return;
-                }
-                else 
-                {
-                    fprintf(stderr, "No preferred outputmode found. This case is not yet implemented. Please use \"xrandr --output %.*s --auto\"\n", (int)Output->NameCount, Output->Name);
-                    return;
-                }
-            }
-        }
-        else
-        {
-            printf("Set CRTC to off\n");
-            // TODO(dgl): Do we have to do something else?
-            xcb_randr_set_crtc_config_cookie_t ConfigCookie = xcb_randr_set_crtc_config(Context->Connection, 
-                                                                                        Crtc, 
-                                                                                        Context->Screen->timestamp, 
-                                                                                        Context->Screen->config_timestamp, 
-                                                                                        0, 
-                                                                                        0, 
-                                                                                        XCB_NONE, 
-                                                                                        XCB_RANDR_ROTATION_ROTATE_0, 
-                                                                                        0, NULL);
-            
-            xcb_randr_set_crtc_config_reply_t* ConfigReply = xcb_randr_set_crtc_config_reply(Context->Connection,
-                                                                                             ConfigCookie,
-                                                                                             NULL);
-            
-            if(ConfigReply)
-            {
-                printf("Config Status: %d\n", ConfigReply->status);
-            }
-        }
-    }
-    else
-    {
-        fprintf(stderr, "Output %.*s is disconnected\n", (int)Output->NameCount, Output->Name);
-    }
-    
-}
-
 internal xcb_output
 GetScreenOutputByName(xcb_context *Context, char *Name)
 {
@@ -441,6 +330,135 @@ GetContext()
     
     return(Result);
 }
+
+internal xcb_randr_mode_t
+GetPreferredMode(xcb_context *Context, xcb_output *Output)
+{
+    xcb_randr_mode_t Result = 0;
+    // NOTE(dgl): It looks like the preferred modes are listed at the of the modes list. For reference checkout xrandr: https://gitlab.freedesktop.org/xorg/app/xrandr/-/blob/master/xrandr.c#L3975
+    int OutputModeCount = xcb_randr_get_output_info_modes_length(Output->Info);
+    xcb_randr_mode_t *OutputModes = xcb_randr_get_output_info_modes(Output->Info);
+    for(int Index = 0;
+        Index < OutputModeCount;
+        ++Index)
+    {
+        xcb_randr_mode_t OutputMode = OutputModes[Index];
+        // TODO(dgl): handle more than one modes and if no preferred mode is available
+        if(Index < Output->Info->num_preferred)
+        {
+            Result = OutputMode;
+            break;
+        }
+        else 
+        {
+            fprintf(stderr, "No preferred outputmode found. This case is not yet implemented. Please use \"xrandr --output %.*s --auto\"\n", (int)Output->NameCount, Output->Name);
+        }
+    }
+    return(Result);
+}
+
+internal void
+SetCrtcConfig(xcb_context *Context, xcb_randr_crtc_t Crtc, 
+              xcb_randr_output_t *Output, uint32 OutputCount, xcb_randr_mode_t OutputMode)
+{
+    xcb_randr_set_crtc_config_cookie_t Cookie;
+    Cookie = xcb_randr_set_crtc_config(Context->Connection, 
+                                       Crtc, 
+                                       Context->Screen->timestamp, 
+                                       Context->Screen->config_timestamp, 
+                                       0, 
+                                       0, 
+                                       OutputMode, 
+                                       XCB_RANDR_ROTATION_ROTATE_0, 
+                                       OutputCount, Output);
+    
+    xcb_randr_set_crtc_config_reply_t* ConfigReply = xcb_randr_set_crtc_config_reply(Context->Connection,
+                                                                                     Cookie,
+                                                                                     NULL);
+    if(ConfigReply)
+    {
+        printf("Config Status: %d\n", ConfigReply->status);
+    }
+    else
+    {
+        fprintf(stderr, "Failed to set crtc config\n");
+    }
+}
+
+
+internal void
+SetOutputCrtcMode(xcb_context *Context, xcb_output *Output, xcb_crtc_mode Mode)
+{
+    if(Output->IsConnected)
+    {
+        // TODO(dgl): If it was  there is not crtc associated with the output.
+        // I guess we need to query the crtcs and outputs and then combine these.
+        printf("Output Crtc: %d\n", Output->Info->crtc);
+        xcb_randr_crtc_t Crtc;
+        if(Output->Info->crtc)
+        {
+            Crtc = Output->Info->crtc;
+        }
+        else
+        {
+            // TODO(dgl): If no crtc is found for the output we use the first with no outputs assigned.
+            // But something is not right yet. Because changing the crtc config only works the first time. The change returns success but nothing happens.
+            // TODO(dgl): We can set it to off and afterwards to mirror. This works fine. But after mirror nothing happens anymore.
+            for(int Index = 0;
+                Index < Context->CrtcCount;
+                ++Index)
+            {
+                xcb_randr_get_crtc_info_cookie_t CrtcInfoCookie = xcb_randr_get_crtc_info(Context->Connection,
+                                                                                          Context->Crtcs[Index],
+                                                                                          Context->Screen->config_timestamp);
+                
+                xcb_randr_get_crtc_info_reply_t* CrtcInfo = xcb_randr_get_crtc_info_reply(Context->Connection,
+                                                                                          CrtcInfoCookie,
+                                                                                          NULL);
+                
+                printf("Crtc Mode: %d, NOutputs: %d, Possible Outputs %d\n", CrtcInfo->mode, CrtcInfo->num_outputs, CrtcInfo->num_possible_outputs);
+                if(CrtcInfo->num_outputs == 0)
+                {
+                    Crtc = Context->Crtcs[Index];
+                    break;
+                }
+            }
+        }
+        
+        if(Mode == AUTOMATIC)
+        {
+            printf("Set CRTC to auto\n");
+            xcb_randr_mode_t OutputMode = GetPreferredMode(Context, Output);
+            SetCrtcConfig(Context, Crtc, &Output->Id, 1, OutputMode);
+        }
+        else
+        {
+            printf("Set CRTC to off\n");
+            SetCrtcConfig(Context, Crtc, NULL, 0, XCB_NONE);
+            
+            // NOTE(dgl): Restore crtcs after setting to NULL
+            // I have no idea if this does something...
+            /*xcb_randr_get_crtc_info_cookie_t CrtcInfoCookie = xcb_randr_get_crtc_info(Context->Connection,
+                                                                                      Crtc,
+                                                                                      Context->Screen->config_timestamp);
+            
+            xcb_randr_get_crtc_info_reply_t* CrtcInfo = xcb_randr_get_crtc_info_reply(Context->Connection,
+                                                                                      CrtcInfoCookie,
+                                                                                      NULL);
+            
+            uint32 CrtcOutputCount = (uint32)xcb_randr_get_crtc_info_outputs_length(CrtcInfo);
+            xcb_randr_output_t *CrtcOutputs = xcb_randr_get_crtc_info_outputs(CrtcInfo);
+            
+            SetCrtcConfig(Context, Crtc, CrtcOutputs, CrtcOutputCount, XCB_NONE);*/
+        }
+    }
+    else
+    {
+        fprintf(stderr, "Output %.*s is disconnected\n", (int)Output->NameCount, Output->Name);
+    }
+    
+}
+
 
 int main(int argc, char** argv)
 {
@@ -520,8 +538,8 @@ int main(int argc, char** argv)
                 
                 xcb_context Context = GetContext();
                 
-                xcb_output OutputeDP1 = GetScreenOutputByName(&Context, "Virtual1");
-                xcb_output OutputHDMI1 = GetScreenOutputByName(&Context, "Virtual2");
+                xcb_output OutputeDP1 = GetScreenOutputByName(&Context, "eDP-1");
+                xcb_output OutputHDMI1 = GetScreenOutputByName(&Context, "HDMI-1");
                 
                 if(OutputeDP1.Id && OutputHDMI1.Id)
                 {
@@ -543,8 +561,8 @@ int main(int argc, char** argv)
             {
                 xcb_context Context = GetContext();
                 
-                xcb_output OutputeDP1 = GetScreenOutputByName(&Context, "Virtual1");
-                xcb_output OutputHDMI1 = GetScreenOutputByName(&Context, "Virtual2");
+                xcb_output OutputeDP1 = GetScreenOutputByName(&Context, "eDP-1");
+                xcb_output OutputHDMI1 = GetScreenOutputByName(&Context, "HTMI-1");
                 
                 if(OutputeDP1.Id && OutputHDMI1.Id)
                 {
@@ -563,6 +581,25 @@ int main(int argc, char** argv)
             }
             else if(StringCompare("-hdmi", Arg, 5) == 0)
             {
+                xcb_context Context = GetContext();
+                
+                xcb_output OutputeDP1 = GetScreenOutputByName(&Context, "eDP-1");
+                xcb_output OutputHDMI1 = GetScreenOutputByName(&Context, "HTMI-1");
+                
+                if(OutputeDP1.Id && OutputHDMI1.Id)
+                {
+                    SetOutputProperty(&Context, &OutputHDMI1, "Broadcast RGB", "Limited 16:235");
+                    
+                    SetOutputCrtcMode(&Context, &OutputeDP1, OFF);
+                    SetOutputCrtcMode(&Context, &OutputHDMI1, AUTOMATIC);
+                }
+                else
+                {
+                    fprintf(stderr, "Output eDP-1 or HDMI-1 not found. Please check with the xrandr command\n");
+                }
+                
+                // NOTE(dgl): We do not free because the programm terminates after executing the necessary commands.
+                // This tool should not be used as long running service.
                 cursor++;
             }
             else
