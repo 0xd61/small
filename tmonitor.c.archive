@@ -6,6 +6,8 @@ This tool combines parts of xbacklight, xrandr and redshift to control backlight
 
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
 
+// NOTE(dgl): This tools is kinda deprecated. I do not need it anymore therefore it is not uptodate. It was also mostly for getting to know xcb.
+
 #include <dirent.h> // dirent, readdir
 #include <fcntl.h> // open, close
 #include <unistd.h> // read, write
@@ -36,7 +38,7 @@ typedef struct
     int OutputCount;
     xcb_randr_crtc_t *Crtcs;
     int CrtcCount;
-    
+
 } xcb_context;
 
 typedef struct
@@ -69,7 +71,7 @@ StringLength(char *String)
     {
         Count++;
     }
-    
+
     return(Count);
 }
 
@@ -79,13 +81,13 @@ StringCopy(char *Src, size_t SrcCount, char *Dest, size_t DestCount)
 {
     // NOTE(dgl): Must be one larger for nullbyte
     Assert(DestSize > SrcSize);
-    
+
     for(int index = 0; index < SrcCount; ++index)
     {
         *Dest++ = *Src++;
     }
     *Dest = '\0';
-    
+
 }
 
 // TODO(dgl): Think about optimization if used in multiple tools
@@ -140,7 +142,7 @@ WriteBrightnessToFile(const char*Path, uint32 Brightness)
     if(FileHandle > 0)
     {
         ssize_t WriteCount = 0;
-        
+
         // NOTE(dgl): Overkill but who cares
         char Buffer[128] = {};
         UInt32ToA(Brightness, Buffer, ArrayCount(Buffer));
@@ -173,13 +175,13 @@ ReadBrightnessFromFile(const char* Path)
         if(ReadCount >= 0)
         {
             size_t ReadCount = StringLength(Buffer);
-            
+
             // NOTE(dgl): Remove the \n at the end of the value with -1
             if(Buffer[ReadCount - 1] < '0' || Buffer[ReadCount - 1] > '9')
             {
                 ReadCount--;
             }
-            
+
             Result = AToUInt32(Buffer, ReadCount);
         }
         else
@@ -215,29 +217,29 @@ GetProviderInfo(backlight_provider *Providers, uint32 ProviderCount)
             {
                 backlight_provider *Provider = &Providers[CurrentProvider++];
                 Assert(CurrentProvider < ProviderCount);
-                
+
                 size_t NameCount = StringLength(Entry->d_name);
-                
+
                 StringConcat(ACPI_BACKLIGHT_DIR, BasePathCount, Entry->d_name, NameCount, Provider->PathName, ArrayCount(Provider->PathName));
-                
+
                 Provider->PathNameCount = BasePathCount + NameCount;
-                
+
                 // NOTE(dgl): Getting max brightness for provider
                 char MaxBrightnessPath[4096];
                 size_t MaxBrightnessFileNameCount = StringLength(MAX_BRIGHTNESS_FILENAME);
                 StringConcat(Provider->PathName, Provider->PathNameCount,
                              MAX_BRIGHTNESS_FILENAME, MaxBrightnessFileNameCount,
                              MaxBrightnessPath, ArrayCount(MaxBrightnessPath));
-                
+
                 Provider->MaxBrightness = ReadBrightnessFromFile(MaxBrightnessPath);
-                
+
                 // NOTE(dgl): Getting current brightness for provider
                 char CurrentBrightnessPath[4096];
                 size_t CurrentBrightnessFileNameCount = StringLength(CURRENT_BRIGHTNESS_FILENAME);
                 StringConcat(Provider->PathName, Provider->PathNameCount,
                              CURRENT_BRIGHTNESS_FILENAME, CurrentBrightnessFileNameCount,
                              CurrentBrightnessPath, ArrayCount(CurrentBrightnessPath));
-                
+
                 uint32 Brightness = ReadBrightnessFromFile(CurrentBrightnessPath);
                 Provider->Brightness = ((real32)Brightness / (real32)Provider->MaxBrightness);
             }
@@ -249,37 +251,37 @@ GetProviderInfo(backlight_provider *Providers, uint32 ProviderCount)
     {
         // TODO(dgl): logging
     }
-    
+
     return(Result);
 }
 
 internal void
 SetOutputProperty(xcb_context *Context, xcb_output *Output, char *Propery, char *Value)
 {
-    
+
 }
 
 internal xcb_output
 GetScreenOutputByName(xcb_context *Context, char *Name)
 {
     xcb_output Result = {};
-    
-    for (int Index = 0; 
-         Index < Context->OutputCount; 
-         ++Index) 
+
+    for (int Index = 0;
+         Index < Context->OutputCount;
+         ++Index)
     {
         // NOTE(dgl): Assert if outputs have been fetched
         Assert(Context->Outputs && Context->Screen);
-        
+
         xcb_randr_get_output_info_cookie_t OutputInfoCookie = xcb_randr_get_output_info(Context->Connection, Context->Outputs[Index], Context->Screen->config_timestamp);
-        
-        xcb_randr_get_output_info_reply_t *OutputInfo = 
+
+        xcb_randr_get_output_info_reply_t *OutputInfo =
             xcb_randr_get_output_info_reply(Context->Connection, OutputInfoCookie, NULL);
-        
+
         if(OutputInfo)
         {
             int OutputNameCount = xcb_randr_get_output_info_name_length(OutputInfo);
-            
+
             if(OutputNameCount > 0)
             {
                 if(OutputNameCount == StringLength(Name))
@@ -292,7 +294,7 @@ GetScreenOutputByName(xcb_context *Context, char *Name)
                         Result.Name = OutputName;
                         Result.NameCount = (size_t)OutputNameCount;
                         Result.IsConnected = (OutputInfo->connection == XCB_RANDR_CONNECTION_CONNECTED);
-                        
+
                         printf("Outputname: %s\n", OutputName);
                     }
                 }
@@ -307,7 +309,7 @@ GetScreenOutputByName(xcb_context *Context, char *Name)
             // TODO(dgl): logging
         }
     }
-    
+
     return(Result);
 }
 
@@ -316,18 +318,18 @@ GetContext()
 {
     xcb_context Result = {};
     Result.Connection = xcb_connect(NULL, NULL);
-    
+
     xcb_screen_t *Screen = xcb_setup_roots_iterator(xcb_get_setup(Result.Connection)).data;
     xcb_randr_get_screen_resources_current_cookie_t ScreenResourcesCookie = xcb_randr_get_screen_resources_current(Result.Connection, Screen->root);
-    
+
     Result.Screen = xcb_randr_get_screen_resources_current_reply(Result.Connection, ScreenResourcesCookie, NULL);
     Result.OutputCount = xcb_randr_get_screen_resources_current_outputs_length(Result.Screen);
     Result.Outputs = xcb_randr_get_screen_resources_current_outputs(Result.Screen);
-    
+
     Result.CrtcCount = xcb_randr_get_screen_resources_current_crtcs_length(Result.Screen);
-    
+
     Result.Crtcs = xcb_randr_get_screen_resources_current_crtcs(Result.Screen);
-    
+
     return(Result);
 }
 
@@ -349,7 +351,7 @@ GetPreferredMode(xcb_context *Context, xcb_output *Output)
             Result = OutputMode;
             break;
         }
-        else 
+        else
         {
             fprintf(stderr, "No preferred outputmode found. This case is not yet implemented. Please use \"xrandr --output %.*s --auto\"\n", (int)Output->NameCount, Output->Name);
         }
@@ -358,20 +360,20 @@ GetPreferredMode(xcb_context *Context, xcb_output *Output)
 }
 
 internal void
-SetCrtcConfig(xcb_context *Context, xcb_randr_crtc_t Crtc, 
+SetCrtcConfig(xcb_context *Context, xcb_randr_crtc_t Crtc,
               xcb_randr_output_t *Output, uint32 OutputCount, xcb_randr_mode_t OutputMode)
 {
     xcb_randr_set_crtc_config_cookie_t Cookie;
-    Cookie = xcb_randr_set_crtc_config(Context->Connection, 
-                                       Crtc, 
-                                       Context->Screen->timestamp, 
-                                       Context->Screen->config_timestamp, 
-                                       0, 
-                                       0, 
-                                       OutputMode, 
-                                       XCB_RANDR_ROTATION_ROTATE_0, 
+    Cookie = xcb_randr_set_crtc_config(Context->Connection,
+                                       Crtc,
+                                       Context->Screen->timestamp,
+                                       Context->Screen->config_timestamp,
+                                       0,
+                                       0,
+                                       OutputMode,
+                                       XCB_RANDR_ROTATION_ROTATE_0,
                                        OutputCount, Output);
-    
+
     xcb_randr_set_crtc_config_reply_t* ConfigReply = xcb_randr_set_crtc_config_reply(Context->Connection,
                                                                                      Cookie,
                                                                                      NULL);
@@ -411,11 +413,11 @@ SetOutputCrtcMode(xcb_context *Context, xcb_output *Output, xcb_crtc_mode Mode)
                 xcb_randr_get_crtc_info_cookie_t CrtcInfoCookie = xcb_randr_get_crtc_info(Context->Connection,
                                                                                           Context->Crtcs[Index],
                                                                                           Context->Screen->config_timestamp);
-                
+
                 xcb_randr_get_crtc_info_reply_t* CrtcInfo = xcb_randr_get_crtc_info_reply(Context->Connection,
                                                                                           CrtcInfoCookie,
                                                                                           NULL);
-                
+
                 printf("Crtc Mode: %d, NOutputs: %d, Possible Outputs %d\n", CrtcInfo->mode, CrtcInfo->num_outputs, CrtcInfo->num_possible_outputs);
                 if(CrtcInfo->num_outputs == 0)
                 {
@@ -424,7 +426,7 @@ SetOutputCrtcMode(xcb_context *Context, xcb_output *Output, xcb_crtc_mode Mode)
                 }
             }
         }
-        
+
         if(Mode == AUTOMATIC)
         {
             printf("Set CRTC to auto\n");
@@ -435,20 +437,20 @@ SetOutputCrtcMode(xcb_context *Context, xcb_output *Output, xcb_crtc_mode Mode)
         {
             printf("Set CRTC to off\n");
             SetCrtcConfig(Context, Crtc, NULL, 0, XCB_NONE);
-            
+
             // NOTE(dgl): Restore crtcs after setting to NULL
             // I have no idea if this does something...
             /*xcb_randr_get_crtc_info_cookie_t CrtcInfoCookie = xcb_randr_get_crtc_info(Context->Connection,
                                                                                       Crtc,
                                                                                       Context->Screen->config_timestamp);
-            
+
             xcb_randr_get_crtc_info_reply_t* CrtcInfo = xcb_randr_get_crtc_info_reply(Context->Connection,
                                                                                       CrtcInfoCookie,
                                                                                       NULL);
-            
+
             uint32 CrtcOutputCount = (uint32)xcb_randr_get_crtc_info_outputs_length(CrtcInfo);
             xcb_randr_output_t *CrtcOutputs = xcb_randr_get_crtc_info_outputs(CrtcInfo);
-            
+
             SetCrtcConfig(Context, Crtc, CrtcOutputs, CrtcOutputCount, XCB_NONE);*/
         }
     }
@@ -456,7 +458,7 @@ SetOutputCrtcMode(xcb_context *Context, xcb_output *Output, xcb_crtc_mode Mode)
     {
         fprintf(stderr, "Output %.*s is disconnected\n", (int)Output->NameCount, Output->Name);
     }
-    
+
 }
 
 
@@ -465,19 +467,19 @@ int main(int argc, char** argv)
     if(argc == 1)
     {
         backlight_provider Providers[8] = {};
-        
+
         uint32 AvailableProviderCount = GetProviderInfo(Providers, ArrayCount(Providers));
         if(AvailableProviderCount <= 0)
         {
             fprintf(stderr, "No backlight provider found.");
             return -1;
         }
-        
+
         for(int Index = 0; Index < AvailableProviderCount; ++Index)
         {
             backlight_provider *Provider = &Providers[Index];
             printf("Provider.Path %s\nProvider.MaxBrightness %d\nProvider.Brightness %f (%d%%)\n", Provider->PathName, Provider->MaxBrightness, Provider->Brightness, (int)(Provider->Brightness * 100));
-            
+
         }
     }
     else
@@ -487,7 +489,7 @@ int main(int argc, char** argv)
         while(cursor < argc)
         {
             char *Arg = argv[cursor];
-            
+
             if(StringCompare("-set", Arg, 4) == 0)
             {
                 if(cursor == argc - 1)
@@ -496,9 +498,9 @@ int main(int argc, char** argv)
                     return -1;
                 }
                 char *BrightnessArg = argv[cursor + 1];
-                
+
                 backlight_provider Providers[8] = {};
-                
+
                 uint32 AvailableProviderCount = GetProviderInfo(Providers, ArrayCount(Providers));
                 if(AvailableProviderCount <= 0)
                 {
@@ -507,10 +509,10 @@ int main(int argc, char** argv)
                 }
                 // TODO(dgl): Allow choosing a specific provider
                 backlight_provider *Provider = &Providers[0];
-                
+
                 size_t ArgLength = StringLength(BrightnessArg);
                 uint32 BrightnessPercent = AToUInt32(BrightnessArg, ArgLength);
-                
+
                 uint32 Brightness;
                 if(BrightnessPercent < 100)
                 {
@@ -520,27 +522,27 @@ int main(int argc, char** argv)
                 {
                     Brightness = Provider->MaxBrightness;
                 }
-                
+
                 char CurrentBrightnessPath[4096];
                 size_t CurrentBrightnessFileNameCount = StringLength(CURRENT_BRIGHTNESS_FILENAME);
                 StringConcat(Provider->PathName, Provider->PathNameCount,
                              CURRENT_BRIGHTNESS_FILENAME, CurrentBrightnessFileNameCount,
                              CurrentBrightnessPath, ArrayCount(CurrentBrightnessPath));
-                
+
                 WriteBrightnessToFile(CurrentBrightnessPath, Brightness);
-                
+
                 cursor += 2;
             }
             else if(StringCompare("-mirror", Arg, 7) == 0)
             {
                 // NOTE(dgl): we used https://github.com/Airblader/xedgewarp as reference
                 // https://stackoverflow.com/questions/36966900/xcb-get-all-monitors-ands-their-x-y-coordinates
-                
+
                 xcb_context Context = GetContext();
-                
+
                 xcb_output OutputeDP1 = GetScreenOutputByName(&Context, "eDP-1");
                 xcb_output OutputHDMI1 = GetScreenOutputByName(&Context, "HDMI-1");
-                
+
                 if(OutputeDP1.Id && OutputHDMI1.Id)
                 {
                     SetOutputProperty(&Context, &OutputHDMI1, "Broadcast RGB", "Limited 16:235");
@@ -551,19 +553,19 @@ int main(int argc, char** argv)
                 {
                     fprintf(stderr, "Output eDP-1 or HDMI-1 not found. Please check with the xrandr command\n");
                 }
-                
+
                 // NOTE(dgl): We do not free because the programm terminates after executing the necessary commands.
                 // This tool should not be used as long running service.
-                
+
                 cursor++;
             }
             else if(StringCompare("-laptop", Arg, 6) == 0)
             {
                 xcb_context Context = GetContext();
-                
+
                 xcb_output OutputeDP1 = GetScreenOutputByName(&Context, "eDP-1");
                 xcb_output OutputHDMI1 = GetScreenOutputByName(&Context, "HTMI-1");
-                
+
                 if(OutputeDP1.Id && OutputHDMI1.Id)
                 {
                     SetOutputCrtcMode(&Context, &OutputeDP1, AUTOMATIC);
@@ -573,23 +575,23 @@ int main(int argc, char** argv)
                 {
                     fprintf(stderr, "Output eDP-1 or HDMI-1 not found. Please check with the xrandr command\n");
                 }
-                
+
                 // NOTE(dgl): We do not free because the programm terminates after executing the necessary commands.
                 // This tool should not be used as long running service.
-                
+
                 cursor++;
             }
             else if(StringCompare("-hdmi", Arg, 5) == 0)
             {
                 xcb_context Context = GetContext();
-                
+
                 xcb_output OutputeDP1 = GetScreenOutputByName(&Context, "eDP-1");
                 xcb_output OutputHDMI1 = GetScreenOutputByName(&Context, "HTMI-1");
-                
+
                 if(OutputeDP1.Id && OutputHDMI1.Id)
                 {
                     SetOutputProperty(&Context, &OutputHDMI1, "Broadcast RGB", "Limited 16:235");
-                    
+
                     SetOutputCrtcMode(&Context, &OutputeDP1, OFF);
                     SetOutputCrtcMode(&Context, &OutputHDMI1, AUTOMATIC);
                 }
@@ -597,7 +599,7 @@ int main(int argc, char** argv)
                 {
                     fprintf(stderr, "Output eDP-1 or HDMI-1 not found. Please check with the xrandr command\n");
                 }
-                
+
                 // NOTE(dgl): We do not free because the programm terminates after executing the necessary commands.
                 // This tool should not be used as long running service.
                 cursor++;
@@ -609,6 +611,6 @@ int main(int argc, char** argv)
             }
         }
     }
-    
+
     return 0;
 }
