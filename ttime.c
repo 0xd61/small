@@ -51,11 +51,11 @@ typedef enum {
 typedef enum {
     Token_Type_Invalid,
     Token_Type_Divider,
-    Token_Type_Date,
-    Token_Type_Time,
-    Token_Type_DateTimeDivider,
-    Token_Type_Sign,
+    Token_Type_Plus,
+    Token_Type_Minus,
     Token_Type_Integer,
+    Token_Type_Colon,
+    Token_Type_At,
     Token_Type_String,
     Token_Type_Newline,
     Token_Type_EndOfFile,
@@ -73,8 +73,6 @@ typedef struct {
     int32  input_count;
     char   at[2];
     int32  line;
-
-    Token_Type last_token_type;
 
     bool32 has_error;
     char  *error_msg;
@@ -127,10 +125,10 @@ read_whole_file(char *filename) {
 
 internal bool32
 is_numeric(char c) {
-    bool32 result = true;
+    bool32 result = false;
 
-    if (c < '0' || c >= '9') {
-        result = false;
+    if (c >= '0' && c <= '9') {
+        result = true;
     }
 
     return result;
@@ -159,13 +157,13 @@ read_last_line_of_file(char *filename) {
 
             assert(filesize >= file_offset, "File offset %lld cannot be larger than filesize %lld", file_offset, filesize);
             usize line_byte_count = cast(usize, filesize - file_offset);
-            void *buffer = malloc(line_byte_count + 1);
+            void *buffer = malloc(line_byte_count);
             if (buffer) {
                 ssize_t res = read(fd, buffer, line_byte_count);
                 if (res == line_byte_count) {
                     result = cast(char *, buffer);
                     // TODO(dgl): should we replace the newline with a nullbyte?
-                    result[line_byte_count + 1] = 0;
+                    result[line_byte_count] = 0;
                     LOG_DEBUG("Read string %s", result);
                 } else {
                     LOG_DEBUG("Wanted to read %zu bytes but read %zd", line_byte_count, res);
@@ -198,7 +196,7 @@ token_error(Tokenizer *tokenizer, char *msg) {
 
 internal void
 refill(Tokenizer *tokenizer) {
-    if(tokenizer->input_count == 0) {
+    if(tokenizer->has_error || tokenizer->input_count == 0) {
         tokenizer->at[0] = 0;
         tokenizer->at[1] = 0;
     } else if(tokenizer->input_count == 1) {
@@ -247,66 +245,30 @@ get_token(Tokenizer *tokenizer) {
             // NOTE(dgl): decrement tokenizer to hit EOF again if someone calls it
             case 0   : { result.type = Token_Type_EndOfFile; } break;
             case '|' : { result.type = Token_Type_Divider; } break;
+            case '+' : { result.type = Token_Type_Plus; } break;
+            case '-' : { result.type = Token_Type_Minus; } break;
+            case ':' : { result.type = Token_Type_Colon; } break;
+            case '@' : { result.type = Token_Type_At; } break;
             case '\n': { result.type = Token_Type_Newline; ++tokenizer->line; } break;
             default: {
-                 if (tokenizer->last_token_type == Token_Type_Time &&
-                   (c == '+' || c == '-')) {
-                    result.type = Token_Type_Sign;
-                } else if (tokenizer->last_token_type == Token_Type_Date &&
-                           c == 'T' &&
-                           is_numeric(tokenizer->at[0])) {
-                    result.type = Token_Type_DateTimeDivider;
-                } else if ((tokenizer->last_token_type == Token_Type_DateTimeDivider || tokenizer->last_token_type == Token_Type_Sign) &&
-                           (is_numeric(c) && is_numeric(tokenizer->at[0]))) {
-                    advance(tokenizer, 1);
-                    result.type = Token_Type_Time;
-                    result.text_length = 2;
-
-                    while(*tokenizer->at == ':') {
+                if (is_numeric(c)) {
+                    result.type = Token_Type_Integer;
+                    while (is_numeric(tokenizer->at[0])) {
                         advance(tokenizer, 1);
-                        if(is_numeric(tokenizer->at[0]) && is_numeric(tokenizer->at[1])) {
-                            advance(tokenizer, 2);
-                            result.text_length = cast(int32, tokenizer->input - result.text);
-                        } else {
-                            token_error(tokenizer, "Invalid time");
-                        }
                     }
-
-                    if (result.text_length > 8) {
-                        token_error(tokenizer, "Invalid time");
-                    }
+                    result.text_length = cast(int32, tokenizer->input - result.text);
                 } else {
-                    if (is_numeric(tokenizer->at[0]) || tokenizer->at[0] == '-') {
+                    result.type = Token_Type_String;
+                    while (tokenizer->at[0] > ' ' && !is_numeric(tokenizer->at[0])) {
                         advance(tokenizer, 1);
-                        result.type = Token_Type_Integer;
-                        while (is_numeric(tokenizer->at[0]) ) {
-                            advance(tokenizer, 1);
-
-                            if (tokenizer->at[0] == '-') {
-                                advance(tokenizer, 1);
-                                result.type = Token_Type_Date;
-                            }
-                        }
-
-                        result.text_length = cast(int32, tokenizer->input - result.text);
-                        if (result.type == Token_Type_Date && result.text_length != 10) {
-                            token_error(tokenizer, "Invalid date length.");
-                        }
-                    } else {
-                        while (tokenizer->at[0] != '\n' && tokenizer->at[0] != 0) {
-                            advance(tokenizer, 1);
-                        }
-                        result.type = Token_Type_String;
-                        result.text_length = cast(int32, tokenizer->input - result.text);
                     }
+                    result.text_length = cast(int32, tokenizer->input - result.text);
                 }
             }
         }
-
-        tokenizer->last_token_type = result.type;
     }
 
-    LOG_DEBUG("Parsed token: type %d, text %.*s", result.type, result.text_length, result.text);
+    LOG_DEBUG("Parsed token: type %d, text %.*s, length %d", result.type, result.text_length, result.text, result.text_length);
 
     return result;
 }
@@ -321,15 +283,41 @@ peek_token(Tokenizer *tokenizer) {
 }
 
 internal char *
-parse_text(Tokenizer *tokenizer) {
+parse_line(Tokenizer *tokenizer) {
+    char *result = 0;
+    if (!tokenizer->has_error) {
+        Token token = {};
+        token = get_token(tokenizer);
+        char *begin = token.text;
+        while(!(token.type == Token_Type_Newline || token.type == Token_Type_EndOfFile)) {
+            token = get_token(tokenizer);
+        }
+
+        usize length = (token.text + token.text_length) - begin;
+
+        result = cast(char *, malloc(length + 1));
+        if (result) {
+            string_copy(begin, length, result, length + 1);
+            result[length] = 0;
+        } else {
+            LOG("Could not allocate memory");
+        }
+    }
+
+    return result;
+}
+
+internal char *
+parse_word(Tokenizer *tokenizer) {
     char *result = 0;
     Token token = {};
     token = get_token(tokenizer);
 
     if (token.type == Token_Type_String) {
-        result = cast(char *, malloc(cast(usize, token.text_length + 1)));
+        result = cast(char *, malloc(token.text_length + 1));
         if (result) {
             string_copy(token.text, cast(usize, token.text_length), result, cast(usize, token.text_length + 1));
+            result[token.text_length] = 0;
         } else {
             LOG("Could not allocate memory");
         }
@@ -345,22 +333,36 @@ parse_date(Tokenizer *tokenizer) {
     Datetime result = {};
     Token token = {};
     token = get_token(tokenizer);
-
-    if (token.type == Token_Type_Date) {
-        // NOTE(dgl): yyyy-mm-dd
-        if (token.text_length == 10) {
-            char *cursor = token.text;
-            result.year = string_to_int32(cursor, 4);
-            cursor += 4 + 1;
-            result.month = string_to_int32(cursor, 2);
-            cursor += 2 + 1;
-            result.day = string_to_int32(cursor, 2);
-        } else {
-            token_error(tokenizer, "Invalid date");
-        }
+    if (token.type == Token_Type_Integer && token.text_length == 4) {
+        result.year = string_to_int32(token.text, token.text_length);
     } else {
-        token_error(tokenizer, "Could not parse date");
+        token_error(tokenizer, "Could not parse date: Invalid year - expected yyyy-mm-dd");
     }
+
+    token = get_token(tokenizer);
+    if (token.type != Token_Type_Minus) {
+        token_error(tokenizer, "Could not parse date: Invalid format - expected yyyy-mm-dd");
+    }
+
+    token = get_token(tokenizer);
+    if (token.type == Token_Type_Integer && token.text_length == 2) {
+        result.month = string_to_int32(token.text, token.text_length);
+    } else {
+        token_error(tokenizer, "Could not parse date: Invalid month - expected yyyy-mm-dd");
+    }
+
+    token = get_token(tokenizer);
+    if (token.type != Token_Type_Minus) {
+        token_error(tokenizer, "Could not parse date: Invalid format - expected yyyy-mm-dd");
+    }
+
+    token = get_token(tokenizer);
+    if (token.type == Token_Type_Integer && token.text_length == 2) {
+        result.day = string_to_int32(token.text, token.text_length);
+    } else {
+        token_error(tokenizer, "Could not parse date: Invalid day - expected yyyy-mm-dd");
+    }
+
     return result;
 }
 
@@ -369,29 +371,32 @@ parse_time(Tokenizer *tokenizer) {
     Datetime result = {};
     Token token = {};
     token = get_token(tokenizer);
-
-    if (token.type == Token_Type_Time) {
-        // NOTE(dgl): hh:mm[:ss]
-        if (token.text_length >= 5 && token.text_length <= 8) {
-            int index = 0;
-            char *cursor = token.text;
-            while (index < token.text_length) {
-                if (index < 3) {
-                    result.hour = string_to_int32(cursor + index, 2);
-                    index += 2 + 1;
-                } else if (index < 5) {
-                    result.minute = string_to_int32(cursor + index, 2);
-                    index += 2 + 1;
-                } else if (index < 8) {
-                    result.second = string_to_int32(cursor + index, 2);
-                    index += 2;
-                }
-            }
-        } else {
-            token_error(tokenizer, "Invalid time");
-        }
+    if(token.type == Token_Type_Integer && token.text_length == 2) {
+        result.hour = string_to_int32(token.text, token.text_length);
     } else {
-        token_error(tokenizer, "Could not parse time");
+        token_error(tokenizer, "Could not parse time: Invalid hour - expected hh[:mm[:ss]]");
+    }
+
+    token = peek_token(tokenizer);
+    if(token.type == Token_Type_Colon) {
+        get_token(tokenizer);
+        token = get_token(tokenizer);
+        if(token.type == Token_Type_Integer && token.text_length == 2) {
+            result.minute = string_to_int32(token.text, token.text_length);
+        } else {
+            token_error(tokenizer, "Could not parse time: Invalid minutes - expected hh:mm[:ss]");
+        }
+    }
+
+    token = peek_token(tokenizer);
+    if(token.type == Token_Type_Colon) {
+        get_token(tokenizer);
+        token = get_token(tokenizer);
+        if(token.type == Token_Type_Integer && token.text_length == 2) {
+            result.second = string_to_int32(token.text, token.text_length);
+        } else {
+            token_error(tokenizer, "Could not parse time: Invalid seconds - expected hh:mm:ss");
+        }
     }
 
     return result;
@@ -401,21 +406,20 @@ internal Datetime
 parse_timezone(Tokenizer *tokenizer) {
     Datetime result = {};
     Token token = {};
-    token = get_token(tokenizer);
 
-    if (token.type == Token_Type_Sign) {
-        assert(token.text_length == 1, "Invalid sign token");
-        if (*token.text == '-') {
+    token = get_token(tokenizer);
+    if (token.type == Token_Type_Plus || token.type == Token_Type_Minus) {
+        if (token.type == Token_Type_Minus) {
             result.offset_sign = true;
         }
-
-        Datetime offset = parse_time(tokenizer);
-        result.offset_hour = offset.hour;
-        result.offset_minute = offset.minute;
-        result.offset_second = offset.second;
     } else {
-        token_error(tokenizer, "Could not parse timezone");
+        token_error(tokenizer, "Could not parse timezone: Invalid format - expected [+|-]hh[:mm[:ss]]");
     }
+
+    Datetime offset = parse_time(tokenizer);
+    result.offset_hour = offset.hour;
+    result.offset_minute = offset.minute;
+    result.offset_second = offset.second;
 
     return result;
 }
@@ -423,14 +427,11 @@ parse_timezone(Tokenizer *tokenizer) {
 internal Datetime
 parse_datetime(Tokenizer *tokenizer) {
     Datetime result = {};
-
     Datetime date = parse_date(tokenizer);
-
     Token token = get_token(tokenizer);
-    if (token.type != Token_Type_DateTimeDivider) {
-        token_error(tokenizer, "Could not parse datetime");
+    if (token.type != Token_Type_String && token.text_length == 1 && token.text[0] != 'T') {
+        token_error(tokenizer, "Could not parse datetime: missing date-time divider T - expected yyyy-mm-ddThh[:mm[:ss]][+|-]hh[:mm[:ss]]");
     }
-
     Datetime time = parse_time(tokenizer);
     Datetime timezone = parse_timezone(tokenizer);
 
@@ -451,7 +452,13 @@ parse_datetime(Tokenizer *tokenizer) {
 internal int32
 parse_integer(Tokenizer *tokenizer) {
     int32 result = 0;
+
     Token token = get_token(tokenizer);
+    if (token.type == Token_Type_Minus) {
+        token = get_token(tokenizer);
+        token.text -= 1;
+        token.text_length += 1;
+    }
 
     if (token.type == Token_Type_Integer) {
         // TODO(dgl): overflow check
@@ -475,7 +482,7 @@ parse_entry(Tokenizer *tokenizer) {
     }
 
     token = peek_token(tokenizer);
-    if (token.type == Token_Type_Date) {
+    if (token.type != Token_Type_Divider) {
         result.end = parse_datetime(tokenizer);
     }
 
@@ -485,7 +492,7 @@ parse_entry(Tokenizer *tokenizer) {
     }
 
     token = peek_token(tokenizer);
-    if (token.type == Token_Type_Integer) {
+    if (token.type != Token_Type_Divider) {
         result.task_id = parse_integer(tokenizer);
     } else {
         result.task_id = -1;
@@ -496,15 +503,7 @@ parse_entry(Tokenizer *tokenizer) {
         token_error(tokenizer, "Could not parse entry");
     }
 
-    token = peek_token(tokenizer);
-    if (token.type == Token_Type_String) {
-        result.annotation = parse_text(tokenizer);
-    }
-
-    token = get_token(tokenizer);
-    if (token.type != Token_Type_Newline && token.type != Token_Type_EndOfFile) {
-        token_error(tokenizer, "Could not parse entry");
-    }
+    result.annotation = parse_line(tokenizer);
 
     return result;
 }
@@ -525,30 +524,11 @@ get_timezone_offset() {
     }
 
     if (string_compare("UTC", tz, 3) != 0) {
-        int index = 0;
-        char *cursor = tz;
-
-        // TODO(dgl): use tokenizer
-        usize len = string_length(tz);
-        while (index < len) {
-            if (index < 1 && cursor[index] == '-') {
-                // NOTE(dgl): sign
-                result.offset_sign = true;
-                index += 1;
-            } else if (index < 3) {
-            // NOTE(dgl): hours
-                result.offset_hour = string_to_int32(cursor + index, 2);
-                index += 2;
-            } else if (index < 5) {
-            // NOTE(dgl): minutes
-                result.offset_minute = string_to_int32(cursor + index, 2);
-                index += 2;
-            } else if (index < 8) {
-            // NOTE(dgl): seconds
-                result.offset_second = string_to_int32(cursor + index, 2);
-                index += 2;
-            }
-        }
+        Tokenizer tokenizer = {};
+        tokenizer.input = tz;
+        tokenizer.input_count = safe_size_to_int32(string_length(tz));
+        refill(&tokenizer);
+        result = parse_timezone(&tokenizer);
     }
 
     return result;

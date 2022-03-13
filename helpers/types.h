@@ -63,8 +63,7 @@ typedef size_t usize;
 #define max(a,b) ((a) > (b) ? (a) : (b))
 #define min(a,b) ((a) < (b) ? (a) : (b))
 #define clamp(x,lo,hi) (min((hi), max((lo), (x))))
-#define abs(x) ((x) < 0 ? (-x) : (x))
-
+#define abs(x) (((x) < 0) ? -(x) : (x))
 #define array_count(array) (sizeof(array) / sizeof((array)[0]))
 #define cast(type, value) (type)(value)
 
