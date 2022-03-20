@@ -40,7 +40,7 @@ build() {
         if [ ${entry: -4} == ".cpp" ]; then
             clang++ -std=c++11 $CommonCompilerFlags $CommonDefines $BASE_DIR/${entry} -o ${BUILD_DIR}/${entry%.*} $CommonLinkerFlags
         else
-            clang -std=c11 $CommonCompilerFlags $CommonDefines $BASE_DIR/${entry} -o ${BUILD_DIR}/${entry%.*} $CommonLinkerFlags
+            clang $CommonCompilerFlags $CommonDefines $BASE_DIR/${entry} -o ${BUILD_DIR}/${entry%.*} $CommonLinkerFlags
         fi
     done
 }

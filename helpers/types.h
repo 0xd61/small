@@ -49,15 +49,17 @@ typedef size_t usize;
     }                                                                          \
 } while(0)
 #else
-#define assert(cond, msg, ...) __builtin_trap();
+#define assert(cond, msg, ...) if (!(cond)) __builtin_trap();
 #endif
 
 #if DEBUG
 #define LOG(fmt, args...) printf(("%s:%d - " fmt "\n"), __FILE__, __LINE__, ##args)
 #define LOG_DEBUG(fmt, args...) printf(("%s:%d - " fmt "\n"), __FILE__, __LINE__, ##args)
+#define PRINT_DEBUG(fmt, args...) printf((fmt), ##args)
 #else
 #define LOG(fmt, args...) printf((fmt "\n"), ##args)
 #define LOG_DEBUG(fmt, ...)
+#define PRINT_DEBUG(fmt, args...)
 #endif
 
 #define max(a,b) ((a) > (b) ? (a) : (b))
