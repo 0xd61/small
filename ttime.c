@@ -13,12 +13,13 @@ Example:
 
 // TODO(dgl): refactor tokenizer
 create a function peek_next_character and eat_next_character
-then use these directly in parse_integer.
+then use these directly in parse_integer. Currently we parse the whole file in 110ms with O3.
 We always know what characters we are expecting.
 Therefore we can parse integers etc. directly and don't need to create a token for them.
 In theory this should be faster and simpler.
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
 #define DEBUG 1
+#define DEBUG_TOKENIZER_PREVIEW 20
 #define MAX_FILENAME_SIZE 4096
 
 #include <stdio.h>
@@ -53,36 +54,14 @@ typedef struct {
     int32 offset_sign;
 } Datetime;
 
-typedef enum {
-    Token_Type_Invalid,
-    Token_Type_Divider,
-    Token_Type_Plus,
-    Token_Type_Minus,
-    Token_Type_Integer,
-    Token_Type_Colon,
-    Token_Type_At,
-    Token_Type_String,
-    Token_Type_Newline,
-    Token_Type_EndOfFile,
-} Token_Type;
-
 typedef struct {
-    char       *text;
-    int32       text_length;
-    int32       line;
-    Token_Type  type;
-} Token;
+    String  input;
 
-typedef struct {
-    char  *input;
-    int32  input_count;
-    char   at[2];
+    int32   column;
+    int32   line;
 
-    int32  column;
-    int32  line;
-
-    bool32 has_error;
-    char  *error_msg;
+    bool32  has_error;
+    char   *error_msg;
 } Tokenizer;
 
 typedef struct {
@@ -224,7 +203,6 @@ get_end_of_file_offset(Buffer *buffer) {
     char *input = cast(char *, buffer->data);
     if (input) {
         char *cursor = input + buffer->data_count;
-        bool32 found_text = false;
         while (cursor > input &&
               (*cursor <= ' ')) {
             cursor--;
@@ -276,38 +254,37 @@ token_error(Tokenizer *tokenizer, char *msg) {
     }
 }
 
+// NOTE(dgl): does not support unicode currently
 internal void
-refill(Tokenizer *tokenizer) {
-    if(tokenizer->has_error || tokenizer->input_count == 0) {
-        tokenizer->at[0] = 0;
-        tokenizer->at[1] = 0;
-    } else if(tokenizer->input_count == 1) {
-        tokenizer->at[0] = tokenizer->input[0];
-        tokenizer->at[1] = 0;
-    } else {
-        tokenizer->at[0] = tokenizer->input[0];
-        tokenizer->at[1] = tokenizer->input[1];
+eat_next_character(Tokenizer *tokenizer) {
+    if (!tokenizer->has_error && tokenizer->input.length > 0) {
+        LOG_DEBUG("Eaten character %c (%d)", *tokenizer->input.text, *tokenizer->input.text);
+        ++tokenizer->input.data;
+        --tokenizer->input.length;
+        ++tokenizer->column;
+        if (*tokenizer->input.text == '\n') {
+            ++tokenizer->line;
+            tokenizer->column = 0;
+        }
     }
 }
 
-internal void
-advance(Tokenizer *tokenizer, uint32 count) {
-    tokenizer->input += count;
-    tokenizer->input_count -= count;
-    tokenizer->column += count;
-
-    if (tokenizer->input_count < 0) {
-        tokenizer->input_count = 0;
+internal char
+peek_next_character(Tokenizer *tokenizer) {
+    char result = 0;
+    if (!tokenizer->has_error && tokenizer->input.length > 0) {
+        result = *tokenizer->input.text;
     }
 
-    refill(tokenizer);
+    LOG_DEBUG("Peeked character %c (%d) - Buffered: %.*s", result, result, DEBUG_TOKENIZER_PREVIEW, tokenizer->input.text);
+
+    return result;
 }
 
 internal void
 eat_all_whitespace(Tokenizer *tokenizer) {
-    // TODO(dgl): allow comments?
-    while(tokenizer->at[0] == ' ') {
-        advance(tokenizer, 1);
+    while(peek_next_character(tokenizer) == ' ') {
+        eat_next_character(tokenizer);
     }
 }
 
@@ -322,128 +299,149 @@ is_numeric(char c) {
     return result;
 }
 
-internal Token
-get_token(Tokenizer *tokenizer) {
-    Token result = {};
+// internal Token
+// get_token(Tokenizer *tokenizer) {
+//     Token result = {};
 
-    if (!tokenizer->has_error) {
-        eat_all_whitespace(tokenizer);
+//     if (!tokenizer->has_error) {
+//         eat_all_whitespace(tokenizer);
 
-        result.text = tokenizer->input;
-        result.text_length = 1;
-        result.line = tokenizer->line;
-        char c = tokenizer->at[0];
-        advance(tokenizer, 1);
+//         result.text = tokenizer->input;
+//         result.text_length = 1;
+//         result.line = tokenizer->line;
+//         char c = tokenizer->at[0];
+//         advance(tokenizer, 1);
 
-        switch(c) {
-            // NOTE(dgl): decrement tokenizer to hit EOF again if someone calls it
-            case 0   : { result.type = Token_Type_EndOfFile; } break;
-            case '|' : { result.type = Token_Type_Divider; } break;
-            case '+' : { result.type = Token_Type_Plus; } break;
-            case '-' : { result.type = Token_Type_Minus; } break;
-            case ':' : { result.type = Token_Type_Colon; } break;
-            case '@' : { result.type = Token_Type_At; } break;
-            case '\n': { result.type = Token_Type_Newline; ++tokenizer->line; } break;
-            default: {
-                if (is_numeric(c)) {
-                    result.type = Token_Type_Integer;
-                    while (is_numeric(tokenizer->at[0])) {
-                        advance(tokenizer, 1);
-                    }
-                    result.text_length = cast(int32, tokenizer->input - result.text);
-                } else {
-                    result.type = Token_Type_String;
-                    while (tokenizer->at[0] > ' ' && !is_numeric(tokenizer->at[0])) {
-                        advance(tokenizer, 1);
-                    }
-                    result.text_length = cast(int32, tokenizer->input - result.text);
-                }
-            }
-        }
-    }
+//         switch(c) {
+//             // NOTE(dgl): decrement tokenizer to hit EOF again if someone calls it
+//             case 0   : { result.type = Token_Type_EndOfFile; } break;
+//             case '|' : { result.type = Token_Type_Divider; } break;
+//             case '+' : { result.type = Token_Type_Plus; } break;
+//             case '-' : { result.type = Token_Type_Minus; } break;
+//             case ':' : { result.type = Token_Type_Colon; } break;
+//             case '@' : { result.type = Token_Type_At; } break;
+//             case '\n': { result.type = Token_Type_Newline; ++tokenizer->line; } break;
+//             default: {
+//                 if (is_numeric(c)) {
+//                     result.type = Token_Type_Integer;
+//                     while (is_numeric(tokenizer->at[0])) {
+//                         advance(tokenizer, 1);
+//                     }
+//                     result.text_length = cast(int32, tokenizer->input - result.text);
+//                 } else {
+//                     result.type = Token_Type_String;
+//                     while (tokenizer->at[0] > ' ' && !is_numeric(tokenizer->at[0])) {
+//                         advance(tokenizer, 1);
+//                     }
+//                     result.text_length = cast(int32, tokenizer->input - result.text);
+//                 }
+//             }
+//         }
+//     }
 
-    LOG_DEBUG("Parsed token: type %d, text %.*s, length %d", result.type, result.text_length, result.text, result.text_length);
+//     LOG_DEBUG("Parsed token: type %d, text %.*s, length %d", result.type, result.text_length, result.text, result.text_length);
 
-    return result;
-}
+//     return result;
+// }
 
-internal Token
-peek_token(Tokenizer *tokenizer) {
-    Tokenizer tokenizer2 = *tokenizer;
+// internal Token
+// peek_token(Tokenizer *tokenizer) {
+//     Tokenizer tokenizer2 = *tokenizer;
 
-    LOG_DEBUG("Peeking next token");
-    Token result = get_token(&tokenizer2);
-    return result;
-}
+//     LOG_DEBUG("Peeking next token");
+//     Token result = get_token(&tokenizer2);
+//     return result;
+// }
 
 internal String
-parse_line(Tokenizer *tokenizer) {
+parse_string_line(Tokenizer *tokenizer) {
+    LOG_DEBUG("Parsing string line from %.*s", DEBUG_TOKENIZER_PREVIEW, tokenizer->input.text);
     String result = {};
     if (!tokenizer->has_error) {
-        Token token = {};
-        token = get_token(tokenizer);
-        char *begin = token.text;
-        while(!(token.type == Token_Type_Newline || token.type == Token_Type_EndOfFile)) {
-            token = get_token(tokenizer);
+        char *begin = tokenizer->input.text;
+        char next = peek_next_character(tokenizer);
+        int32 length = 0;
+        while(!(next == '\n' || next == 0)) {
+            eat_next_character(tokenizer);
+            next = peek_next_character(tokenizer);
+            ++length;
         }
 
-        result.length = (token.text + token.text_length) - begin;
-        result.cap = result.length;
+        result.length = length;
+        result.cap = length;
         result.text = begin;
     }
 
     return result;
 }
 
-// internal char *
-// parse_word(Tokenizer *tokenizer) {
-//     char *result = 0;
-//     Token token = {};
-//     token = get_token(tokenizer);
+internal int32
+parse_integer(Tokenizer *tokenizer) {
+    LOG_DEBUG("Parsing integer from %.*s", DEBUG_TOKENIZER_PREVIEW, tokenizer->input.text);
+    int32 result = 0;
 
-//     if (token.type == Token_Type_String) {
-//         result = token.text;
-//         result[token.text_length] = 0;
-//     } else {
-//         token_error(tokenizer, "Could not parse text");
-//     }
+    char c = peek_next_character(tokenizer);
+    bool32 is_negative = false;
+    if (c == '-') {
+        is_negative = true;
+        eat_next_character(tokenizer);
+        c = peek_next_character(tokenizer);
+    }
 
-//     return result;
-// }
+    if (c >= '0' && c <= '9') {
+        result = c - '0';
+        eat_next_character(tokenizer);
+        c = peek_next_character(tokenizer);
+        while (c >= '0' && c <= '9') {
+            result *= 10;
+            result += c - '0';
+            eat_next_character(tokenizer);
+            c = peek_next_character(tokenizer);
+        }
+    } else {
+        token_error(tokenizer, "Failed to parse integer. Expected a numeric value");
+    }
+
+    if (is_negative) {
+        result = -result;
+    }
+
+    return result;
+}
 
 internal Datetime
 parse_date(Tokenizer *tokenizer) {
+    LOG_DEBUG("Parsing date from %.*s", DEBUG_TOKENIZER_PREVIEW, tokenizer->input.text);
     Datetime result = {};
-    Token token = {};
-    token = get_token(tokenizer);
-    if (token.type == Token_Type_Integer && token.text_length == 4) {
-        result.year = string_to_int32(token.text, token.text_length);
-    } else {
-        token_error(tokenizer, "Could not parse date: Invalid year - expected yyyy-mm-dd");
+    char c = 0;
+
+    result.year = parse_integer(tokenizer);
+    if (result.year < 1000 || result.year >= 10000) {
+        token_error(tokenizer, "Failed to parse date: Invalid year - expected yyyy-mm-dd");
     }
 
-    token = get_token(tokenizer);
-    if (token.type != Token_Type_Minus) {
+    c = peek_next_character(tokenizer);
+    if (c == '-') {
+        eat_next_character(tokenizer);
+    } else {
         token_error(tokenizer, "Could not parse date: Invalid format - expected yyyy-mm-dd");
     }
 
-    token = get_token(tokenizer);
-    if (token.type == Token_Type_Integer && token.text_length == 2) {
-        result.month = string_to_int32(token.text, token.text_length);
-    } else {
-        token_error(tokenizer, "Could not parse date: Invalid month - expected yyyy-mm-dd");
+    result.month = parse_integer(tokenizer);
+    if (result.month < 1 || result.month > 12) {
+        token_error(tokenizer, "Failed to parse date: Invalid month - expected yyyy-mm-dd");
     }
 
-    token = get_token(tokenizer);
-    if (token.type != Token_Type_Minus) {
+    c = peek_next_character(tokenizer);
+    if (c == '-') {
+        eat_next_character(tokenizer);
+    } else {
         token_error(tokenizer, "Could not parse date: Invalid format - expected yyyy-mm-dd");
     }
 
-    token = get_token(tokenizer);
-    if (token.type == Token_Type_Integer && token.text_length == 2) {
-        result.day = string_to_int32(token.text, token.text_length);
-    } else {
-        token_error(tokenizer, "Could not parse date: Invalid day - expected yyyy-mm-dd");
+    result.day = parse_integer(tokenizer);
+    if (result.day < 1 || result.day > 31) {
+        token_error(tokenizer, "Failed to parse date: Invalid day - expected yyyy-mm-dd");
     }
 
     return result;
@@ -451,34 +449,29 @@ parse_date(Tokenizer *tokenizer) {
 
 internal Datetime
 parse_time(Tokenizer *tokenizer) {
+    LOG_DEBUG("Parsing time from %.*s", DEBUG_TOKENIZER_PREVIEW, tokenizer->input.text);
     Datetime result = {};
-    Token token = {};
-    token = get_token(tokenizer);
-    if(token.type == Token_Type_Integer && token.text_length == 2) {
-        result.hour = string_to_int32(token.text, token.text_length);
-    } else {
-        token_error(tokenizer, "Could not parse time: Invalid hour - expected hh[:mm[:ss]]");
+
+    result.hour = parse_integer(tokenizer);
+    if (result.hour < 0 || result.hour > 23) {
+        token_error(tokenizer, "Failed to parse time: Invalid hour - expected hh[:mm[:ss]]");
     }
 
-    token = peek_token(tokenizer);
-    if(token.type == Token_Type_Colon) {
-        get_token(tokenizer);
-        token = get_token(tokenizer);
-        if(token.type == Token_Type_Integer && token.text_length == 2) {
-            result.minute = string_to_int32(token.text, token.text_length);
-        } else {
-            token_error(tokenizer, "Could not parse time: Invalid minutes - expected hh:mm[:ss]");
+    char c = peek_next_character(tokenizer);
+    if (c == ':') {
+        eat_next_character(tokenizer);
+        result.minute = parse_integer(tokenizer);
+        if (result.minute < 0 || result.minute > 59) {
+            token_error(tokenizer, "Failed to parse time: Invalid minute - expected hh:mm[:ss]");
         }
     }
 
-    token = peek_token(tokenizer);
-    if(token.type == Token_Type_Colon) {
-        get_token(tokenizer);
-        token = get_token(tokenizer);
-        if(token.type == Token_Type_Integer && token.text_length == 2) {
-            result.second = string_to_int32(token.text, token.text_length);
-        } else {
-            token_error(tokenizer, "Could not parse time: Invalid seconds - expected hh:mm:ss");
+    c = peek_next_character(tokenizer);
+    if (c == ':') {
+        eat_next_character(tokenizer);
+        result.second = parse_integer(tokenizer);
+        if (result.second < 0 || result.second > 59) {
+            token_error(tokenizer, "Failed to parse time: Invalid second - expected hh:mm:ss");
         }
     }
 
@@ -487,16 +480,17 @@ parse_time(Tokenizer *tokenizer) {
 
 internal Datetime
 parse_timezone(Tokenizer *tokenizer) {
+    LOG_DEBUG("Parsing timezone from %.*s", DEBUG_TOKENIZER_PREVIEW, tokenizer->input.text);
     Datetime result = {};
-    Token token = {};
+    char c = peek_next_character(tokenizer);
 
-    token = get_token(tokenizer);
-    if (token.type == Token_Type_Plus || token.type == Token_Type_Minus) {
-        if (token.type == Token_Type_Minus) {
+    if (c == '-' || c == '+') {
+        if (c == '-') {
             result.offset_sign = true;
         }
+        eat_next_character(tokenizer);
     } else {
-        token_error(tokenizer, "Could not parse timezone: Invalid format - expected [+|-]hh[:mm[:ss]]");
+        token_error(tokenizer, "Failed to parse timezone: Invalid format - expected [+|-]hh[:mm[:ss]]");
     }
 
     Datetime offset = parse_time(tokenizer);
@@ -509,12 +503,17 @@ parse_timezone(Tokenizer *tokenizer) {
 
 internal Datetime
 parse_datetime(Tokenizer *tokenizer) {
+    LOG_DEBUG("Parsing datetime from %.*s", DEBUG_TOKENIZER_PREVIEW, tokenizer->input.text);
     Datetime result = {};
     Datetime date = parse_date(tokenizer);
-    Token token = get_token(tokenizer);
-    if (token.type != Token_Type_String && token.text_length == 1 && token.text[0] != 'T') {
-        token_error(tokenizer, "Could not parse datetime: missing date-time divider T - expected yyyy-mm-ddThh[:mm[:ss]][+|-]hh[:mm[:ss]]");
+
+    char c = peek_next_character(tokenizer);
+    if (c == 'T') {
+        eat_next_character(tokenizer);
+    } else {
+        token_error(tokenizer, "Failed to parse datetime: missing date-time divider T - expected yyyy-mm-ddThh[:mm[:ss]][+|-]hh[:mm[:ss]]");
     }
+
     Datetime time = parse_time(tokenizer);
     Datetime timezone = parse_timezone(tokenizer);
 
@@ -532,29 +531,9 @@ parse_datetime(Tokenizer *tokenizer) {
     return result;
 }
 
-internal int32
-parse_integer(Tokenizer *tokenizer) {
-    int32 result = 0;
-
-    Token token = get_token(tokenizer);
-    if (token.type == Token_Type_Minus) {
-        token = get_token(tokenizer);
-        token.text -= 1;
-        token.text_length += 1;
-    }
-
-    if (token.type == Token_Type_Integer) {
-        // TODO(dgl): overflow check
-        result = string_to_int32(token.text, token.text_length);
-    } else {
-        token_error(tokenizer, "Could not parse integer");
-    }
-
-    return result;
-}
-
 internal Entry
 parse_entry(Tokenizer *tokenizer) {
+    LOG_DEBUG("Parsing entry from %.*s", DEBUG_TOKENIZER_PREVIEW, tokenizer->input.text);
     Entry result = {};
 
     // TODO(dgl): @temporary this file_pos is only valid if we use the get_last_line(). Otherwise
@@ -564,35 +543,54 @@ parse_entry(Tokenizer *tokenizer) {
     //LOG_DEBUG("File offset %lu", result.file_offset);
 
     result.begin = parse_datetime(tokenizer);
+    eat_all_whitespace(tokenizer);
 
-    Token token = get_token(tokenizer);
-    if (token.type != Token_Type_Divider) {
-        token_error(tokenizer, "Could not parse entry");
-    }
-
-    token = peek_token(tokenizer);
-    if (token.type != Token_Type_Divider) {
-        result.end = parse_datetime(tokenizer);
-    }
-
-    token = get_token(tokenizer);
-    if (token.type != Token_Type_Divider) {
-        token_error(tokenizer, "Could not parse entry");
-    }
-
-    token = peek_token(tokenizer);
-    if (token.type != Token_Type_Divider) {
-        result.task_id = parse_integer(tokenizer);
+    char c = peek_next_character(tokenizer);
+    if (c == '|') {
+        eat_next_character(tokenizer);
+        eat_all_whitespace(tokenizer);
     } else {
-        result.task_id = -1;
+        token_error(tokenizer, "Failed to parse entry. Expected a divider (|)");
     }
 
-    token = get_token(tokenizer);
-    if (token.type != Token_Type_Divider) {
-        token_error(tokenizer, "Could not parse entry");
+    // NOTE(dgl): maybe the end time, otherwise a |
+    c = peek_next_character(tokenizer);
+    if (c == '|') {
+        eat_next_character(tokenizer);
+        eat_all_whitespace(tokenizer);
+    } else {
+        result.end = parse_datetime(tokenizer);
+        eat_all_whitespace(tokenizer);
+        c = peek_next_character(tokenizer);
+        if (c == '|') {
+            eat_next_character(tokenizer);
+            eat_all_whitespace(tokenizer);
+        } else {
+            token_error(tokenizer, "Failed to parse entry. Expected a divider (|)");
+        }
     }
 
-    result.annotation = parse_line(tokenizer);
+    c = peek_next_character(tokenizer);
+    if (c == '|') {
+        eat_next_character(tokenizer);
+        eat_all_whitespace(tokenizer);
+    } else {
+        result.task_id = parse_integer(tokenizer);
+        eat_all_whitespace(tokenizer);
+        c = peek_next_character(tokenizer);
+        if (c == '|') {
+            eat_next_character(tokenizer);
+            eat_all_whitespace(tokenizer);
+        } else {
+            token_error(tokenizer, "Failed to parse entry. Expected a divider (|)");
+        }
+    }
+
+    result.annotation = parse_string_line(tokenizer);
+    c = peek_next_character(tokenizer);
+    if (c == '\n') {
+        eat_next_character(tokenizer);
+    }
 
     return result;
 }
@@ -614,9 +612,7 @@ get_timezone_offset() {
 
     if (string_compare("UTC", tz, 3) != 0) {
         Tokenizer tokenizer = {};
-        tokenizer.input = tz;
-        tokenizer.input_count = safe_size_to_int32(string_length(tz));
-        refill(&tokenizer);
+        tokenizer.input = string_from_c_str(tz);
         result = parse_timezone(&tokenizer);
     }
 
@@ -906,9 +902,9 @@ int main(int argc, char** argv) {
                 usize last_line_offset = get_last_line_offset(&buffer);
                 LOG_DEBUG("last_line_offset: %lu", last_line_offset);
                 Tokenizer tokenizer = {};
-                tokenizer.input = buffer.data + last_line_offset;
-                tokenizer.input_count = safe_size_to_int32(buffer.data_count - last_line_offset);
-                refill(&tokenizer);
+                tokenizer.input.data = buffer.data + last_line_offset;
+                tokenizer.input.length = buffer.data_count - last_line_offset;
+                tokenizer.input.cap = tokenizer.input.length;
 
                 Entry entry = parse_entry(&tokenizer);
 
@@ -945,9 +941,9 @@ int main(int argc, char** argv) {
 
                 usize last_line_offset = get_last_line_offset(&buffer);
                 Tokenizer tokenizer = {};
-                tokenizer.input = buffer.data + last_line_offset;
-                tokenizer.input_count = safe_size_to_int32(buffer.data_count - last_line_offset);
-                refill(&tokenizer);
+                tokenizer.input.data = buffer.data + last_line_offset;
+                tokenizer.input.length = buffer.data_count - last_line_offset;
+                tokenizer.input.cap = tokenizer.input.length;
 
                 Entry entry = parse_entry(&tokenizer);
                 entry.buffer_offset = last_line_offset;
@@ -980,15 +976,13 @@ int main(int argc, char** argv) {
 
                 read_entire_file(&file, &buffer);
                 Tokenizer tokenizer = {};
-                tokenizer.input = buffer.data;
-                tokenizer.input_count = safe_size_to_int32(buffer.data_count);
-                refill(&tokenizer);
+                tokenizer.input.data = buffer.data;
+                tokenizer.input.length = buffer.data_count;
+                tokenizer.input.cap = tokenizer.input.length;
 
                 // TODO(dgl): YAY! 500.000 Lines get parsed in about 100ms on my machine.
                 while(!tokenizer.has_error) {
                     Entry entry = parse_entry(&tokenizer);
-                    LOG_DEBUG("%c (%d)", *tokenizer.input, *tokenizer.input);
-                    LOG_DEBUG("Parsing next entry!");
                 }
 
             } break;
