@@ -7,7 +7,7 @@ typedef struct {
     };
 } String;
 
-internal usize
+internal inline usize
 string_length(char *string) {
     usize count = 0;
     while(*string++) {
@@ -27,7 +27,7 @@ string_from_c_str(char *s) {
     return result;
 }
 
-internal char *
+internal inline char *
 string_to_c_str(String s) {
     s.text[s.cap] = 0;
     return s.text;
