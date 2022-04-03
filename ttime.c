@@ -447,17 +447,20 @@ peek_next_character(Tokenizer *tokenizer) {
 
 internal inline void
 eat_all_whitespace(Tokenizer *tokenizer) {
-    bool32 is_comment = false;
     char c = peek_next_character(tokenizer);
-    char next_c = peek_character(tokenizer, 1);
 
-    // TODO(dgl): also allow comments at the end of the line or with whitespace at the beginning...
-    if (c == '/' && next_c == '/') {
-        is_comment = true;
-    }
+    while(c == ' ' || c == '/') {
+        if (c == '/') {
+            char next_c = peek_character(tokenizer, 1);
+            if (next_c == '/') {
+                while(peek_next_character(tokenizer) != '\n') {
+                    eat_next_character(tokenizer);
+                }
+            } else {
+                return;
+            }
+        }
 
-    while(is_comment || c == ' ') {
-        if (is_comment && c == '\n') { is_comment = false; }
         eat_next_character(tokenizer);
         c = peek_next_character(tokenizer);
     }
