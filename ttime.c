@@ -17,7 +17,6 @@ TODO(dgl):
         - If begin is in our range, put the begin date and pos in an array.
         - Sort the array
         - go through the array and show the datetime differences
-    - Allow comments
     - Better commandline errors (currently we get segfaults)
 
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
@@ -428,10 +427,11 @@ eat_next_character(Tokenizer *tokenizer) {
 }
 
 internal inline char
-peek_next_character(Tokenizer *tokenizer) {
+peek_character(Tokenizer *tokenizer, uint32 lookahead) {
     char result = 0;
     if (!tokenizer->has_error && tokenizer->input.length > 0) {
-        result = *tokenizer->input.text;
+        assert(lookahead < tokenizer->input.length, "Lookahead cannot be larger than input");
+        result = *(tokenizer->input.text + lookahead);
     }
 
     // LOG_DEBUG("Peeked character %c (%d) - Buffered: %.*s", result, result, DEBUG_TOKENIZER_PREVIEW, tokenizer->input.text);
@@ -439,11 +439,27 @@ peek_next_character(Tokenizer *tokenizer) {
     return result;
 }
 
+internal inline char
+peek_next_character(Tokenizer *tokenizer) {
+    char result = peek_character(tokenizer, 0);
+    return result;
+}
+
 internal inline void
 eat_all_whitespace(Tokenizer *tokenizer) {
-    // TODO(dgl): eat comments
-    while(peek_next_character(tokenizer) == ' ') {
+    bool32 is_comment = false;
+    char c = peek_next_character(tokenizer);
+    char next_c = peek_character(tokenizer, 1);
+
+    // TODO(dgl): also allow comments at the end of the line or with whitespace at the beginning...
+    if (c == '/' && next_c == '/') {
+        is_comment = true;
+    }
+
+    while(is_comment || c == ' ') {
+        if (is_comment && c == '\n') { is_comment = false; }
         eat_next_character(tokenizer);
+        c = peek_next_character(tokenizer);
     }
 }
 
