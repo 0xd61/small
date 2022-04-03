@@ -12,6 +12,14 @@ Example:
 
 TODO(dgl):
     - segfault if no annotation at start
+    - Better parsing:
+        - Only parse begin date and buffer pos and continue to next line.
+        - If begin is in our range, put the begin date and pos in an array.
+        - Sort the array
+        - go through the array and show the datetime differences
+    - Allow comments
+    - Better commandline errors (currently we get segfaults)
+
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
 #define DEBUG 1
 #define DEBUG_TOKENIZER_PREVIEW 20
@@ -408,7 +416,7 @@ token_error(Tokenizer *tokenizer, char *msg) {
 internal inline void
 eat_next_character(Tokenizer *tokenizer) {
     if (!tokenizer->has_error && tokenizer->input.length > 0) {
-        LOG_DEBUG("Eaten character %c (%d)", *tokenizer->input.text, *tokenizer->input.text);
+        // LOG_DEBUG("Eaten character %c (%d)", *tokenizer->input.text, *tokenizer->input.text);
         ++tokenizer->input.data;
         --tokenizer->input.length;
         ++tokenizer->column;
@@ -426,13 +434,14 @@ peek_next_character(Tokenizer *tokenizer) {
         result = *tokenizer->input.text;
     }
 
-    LOG_DEBUG("Peeked character %c (%d) - Buffered: %.*s", result, result, DEBUG_TOKENIZER_PREVIEW, tokenizer->input.text);
+    // LOG_DEBUG("Peeked character %c (%d) - Buffered: %.*s", result, result, DEBUG_TOKENIZER_PREVIEW, tokenizer->input.text);
 
     return result;
 }
 
 internal inline void
 eat_all_whitespace(Tokenizer *tokenizer) {
+    // TODO(dgl): eat comments
     while(peek_next_character(tokenizer) == ' ') {
         eat_next_character(tokenizer);
     }
@@ -440,7 +449,7 @@ eat_all_whitespace(Tokenizer *tokenizer) {
 
 internal String
 parse_string_line(Tokenizer *tokenizer) {
-    LOG_DEBUG("Parsing string line from %.*s", DEBUG_TOKENIZER_PREVIEW, tokenizer->input.text);
+    // LOG_DEBUG("Parsing string line from %.*s", DEBUG_TOKENIZER_PREVIEW, tokenizer->input.text);
     String result = {};
     if (!tokenizer->has_error) {
         char *begin = tokenizer->input.text;
@@ -462,7 +471,7 @@ parse_string_line(Tokenizer *tokenizer) {
 
 internal int32
 parse_integer(Tokenizer *tokenizer) {
-    LOG_DEBUG("Parsing integer from %.*s", DEBUG_TOKENIZER_PREVIEW, tokenizer->input.text);
+    // LOG_DEBUG("Parsing integer from %.*s", DEBUG_TOKENIZER_PREVIEW, tokenizer->input.text);
     int32 result = 0;
 
     char c = peek_next_character(tokenizer);
@@ -496,7 +505,7 @@ parse_integer(Tokenizer *tokenizer) {
 
 internal Datetime
 parse_date(Tokenizer *tokenizer) {
-    LOG_DEBUG("Parsing date from %.*s", DEBUG_TOKENIZER_PREVIEW, tokenizer->input.text);
+    // LOG_DEBUG("Parsing date from %.*s", DEBUG_TOKENIZER_PREVIEW, tokenizer->input.text);
     Datetime result = {};
     char c = 0;
 
@@ -534,7 +543,7 @@ parse_date(Tokenizer *tokenizer) {
 
 internal Datetime
 parse_time(Tokenizer *tokenizer) {
-    LOG_DEBUG("Parsing time from %.*s", DEBUG_TOKENIZER_PREVIEW, tokenizer->input.text);
+    // LOG_DEBUG("Parsing time from %.*s", DEBUG_TOKENIZER_PREVIEW, tokenizer->input.text);
     Datetime result = {};
 
     result.hour = parse_integer(tokenizer);
@@ -565,7 +574,7 @@ parse_time(Tokenizer *tokenizer) {
 
 internal Datetime
 parse_timezone(Tokenizer *tokenizer) {
-    LOG_DEBUG("Parsing timezone from %.*s", DEBUG_TOKENIZER_PREVIEW, tokenizer->input.text);
+    // LOG_DEBUG("Parsing timezone from %.*s", DEBUG_TOKENIZER_PREVIEW, tokenizer->input.text);
     Datetime result = {};
     char c = peek_next_character(tokenizer);
 
@@ -588,7 +597,7 @@ parse_timezone(Tokenizer *tokenizer) {
 
 internal Datetime
 parse_datetime(Tokenizer *tokenizer) {
-    LOG_DEBUG("Parsing datetime from %.*s", DEBUG_TOKENIZER_PREVIEW, tokenizer->input.text);
+    // LOG_DEBUG("Parsing datetime from %.*s", DEBUG_TOKENIZER_PREVIEW, tokenizer->input.text);
     Datetime result = {};
     Datetime date = parse_date(tokenizer);
 
@@ -618,7 +627,7 @@ parse_datetime(Tokenizer *tokenizer) {
 
 internal Entry
 parse_entry(Tokenizer *tokenizer) {
-    LOG_DEBUG("Parsing entry from %.*s", DEBUG_TOKENIZER_PREVIEW, tokenizer->input.text);
+    // LOG_DEBUG("Parsing entry from %.*s", DEBUG_TOKENIZER_PREVIEW, tokenizer->input.text);
     Entry result = {};
 
     // TODO(dgl): @temporary this file_pos is only valid if we use the get_last_line(). Otherwise
@@ -789,6 +798,8 @@ datetime_to_epoch(Datetime *datetime) {
         timestamp -= timezone_offset;
     }
 
+    result = timestamp;
+
     return result;
 }
 
@@ -829,8 +840,8 @@ datetime_wrap(int32 *value, int32 lo, int32 hi) {
 // TODO(dgl): would this be more efficient converting everything to s, and back?
 internal void
 datetime_normalize(Datetime *datetime) {
-    LOG_DEBUG("Date before normalizing");
-    print_timestamp(datetime);
+//     LOG_DEBUG("Date before normalizing");
+//     print_timestamp(datetime);
 
     datetime->minute += datetime_wrap(&datetime->second, 0, 59);
     datetime->hour += datetime_wrap(&datetime->minute, 0, 59);
@@ -854,8 +865,8 @@ datetime_normalize(Datetime *datetime) {
     assert(datetime->minute >= 0 && datetime->minute < 60, "Invalid minute. Minute must be between 0 and 59, got: %d", datetime->minute);
     assert(datetime->second >= 0 && datetime->month < 60, "Invalid second. Second must be between 0 and 59, got: %d", datetime->second);
 
-    LOG_DEBUG("Date after normalizing");
-    print_timestamp(datetime);
+//     LOG_DEBUG("Date after normalizing");
+//     print_timestamp(datetime);
 }
 
 internal int32
@@ -993,14 +1004,14 @@ datetime_to_end_of(Report_Type type, Datetime *datetime) {
 }
 
 
-// internal int32
-// datetime_compare(Datetime *a, Datetime *b) {
-//     int32 result = 0;
-//     assert(a->offset_hour == 0 && a->offset_minute == 0 && a->offset_second == 0, "Datetime is not UTC");
-//     assert(a->offset_hour == 0 && a->offset_minute == 0 && b->offset_second == 0, "Datetime is not UTC");
+internal int32
+datetime_compare(Datetime *a, Datetime *b) {
+    int32 result = 0;
+    assert(a->offset_hour == 0 && a->offset_minute == 0 && a->offset_second == 0, "Datetime is not UTC");
+    assert(a->offset_hour == 0 && a->offset_minute == 0 && b->offset_second == 0, "Datetime is not UTC");
 
-//     return result;
-// }
+    return result;
+}
 
 //
 // Commandline
@@ -1235,17 +1246,75 @@ int main(int argc, char** argv) {
                 }
             } break;
             case Command_Type_Report: {
-//                 File_Stats file = get_file_stats(cmdline.filename);
-//                 Buffer buffer = allocate_filebuffer(&file, 0);
-//                 read_entire_file(&file, &buffer);
-//                 Tokenizer tokenizer = {};
-//                 fill_tokenizer(&tokenizer, &buffer);
+                File_Stats file = get_file_stats(cmdline.filename);
+                Buffer buffer = allocate_filebuffer(&file, 0);
+                read_entire_file(&file, &buffer);
+                Tokenizer tokenizer = {};
+                fill_tokenizer(&tokenizer, &buffer);
 
-//                 // TODO(dgl): YAY! 500.000 Lines get parsed in about 50ms on my machine.
-//                 while(!tokenizer.has_error && tokenizer.input.length > 0) {
-//                     Entry entry = parse_entry(&tokenizer);
-//                     eat_all_whitespace(&tokenizer);
-//                 }
+                usize from_sentinel = datetime_to_epoch(&cmdline.report.from);
+                LOG_DEBUG("From sentinel %lu", from_sentinel);
+                usize to_sentinel = datetime_to_epoch(&cmdline.report.to);
+                LOG_DEBUG("To sentinel %lu", to_sentinel);
+
+                LOG_DEBUG("Matching Timestamps:");
+                usize total_seconds = 0;
+                while(!tokenizer.has_error && tokenizer.input.length > 0) {
+                    Entry entry = parse_entry(&tokenizer);
+                    eat_all_whitespace(&tokenizer);
+
+                    usize begin = datetime_to_epoch(&entry.begin);
+
+                    if (begin < from_sentinel || begin > to_sentinel) {
+                        continue;
+                    }
+
+                    usize end = datetime_to_epoch(&entry.end);
+                    assert(begin < end, "End time cannot be larger than begin time");
+                    usize difftime = end - begin;
+                    total_seconds += difftime;
+
+                    int32 hours = cast(int32, difftime / 3600);
+                    difftime = difftime - (hours * 3600);
+                    int32 minutes = cast(int32, difftime / 60);
+                    difftime = difftime - (minutes * 60);
+                    int32 seconds = cast(int32, difftime);
+
+                    printf("%04d-%02d-%02dT%02d:%02d:%02d%c%02d:%02d:%02d - "
+                           "%04d-%02d-%02dT%02d:%02d:%02d%c%02d:%02d:%02d => "
+                           "%02d:%02d:%02d hs\n",
+                          entry.begin.year,
+                          entry.begin.month,
+                          entry.begin.day,
+                          entry.begin.hour,
+                          entry.begin.minute,
+                          entry.begin.second,
+                          entry.begin.offset_sign ? '-' : '+',
+                          entry.begin.offset_hour,
+                          entry.begin.offset_minute,
+                          entry.begin.offset_second,
+                          entry.end.year,
+                          entry.end.month,
+                          entry.end.day,
+                          entry.end.hour,
+                          entry.end.minute,
+                          entry.end.second,
+                          entry.end.offset_sign ? '-' : '+',
+                          entry.end.offset_hour,
+                          entry.end.offset_minute,
+                          entry.end.offset_second,
+                          hours,
+                          minutes,
+                          seconds);
+                }
+
+                int32 hours = cast(int32, total_seconds / 3600);
+                total_seconds = total_seconds - (hours * 3600);
+                int32 minutes = cast(int32, total_seconds / 60);
+                total_seconds = total_seconds - (minutes * 60);
+                int32 seconds = cast(int32, total_seconds);
+
+                printf("TOTAL HOURS: %02d:%02d:%02d hs\n", hours, minutes, seconds);
 
             } break;
             case Command_Type_CSV: {
