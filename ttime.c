@@ -72,6 +72,7 @@ typedef struct {
 } Datetime;
 
 typedef struct {
+    Buffer *buffer; // NOTE(dgl): use for jumping to different positions
     String  input;
 
     int32   column;
@@ -82,12 +83,19 @@ typedef struct {
 } Tokenizer;
 
 typedef struct {
+    usize begin; // NOTE(dgl): epoch of begin
+    uintptr buffer_pos;
+    int32 line;
+    usize length;
+} EntryMeta;
+
+typedef struct {
     Datetime   begin;
     Datetime   end;
     int32      task_id;
     int32      line;
     String     annotation; /* TODO(dgl): only load those on demand? */
-    usize      buffer_offset;
+    usize      buffer_offset; /* TODO(dgl): replace with EntryMeta  */
 } Entry;
 
 typedef enum {
@@ -382,6 +390,8 @@ write_entry_to_buffer(Entry *entry, Buffer *buffer) {
 //
 // Tokenizer/Parser
 //
+internal inline usize datetime_to_epoch(Datetime *datetime);
+internal void print_timestamp(Datetime *timestamp);
 
 internal void
 fill_tokenizer(Tokenizer *tokenizer, Buffer *buffer) {
@@ -449,7 +459,7 @@ internal inline void
 eat_all_whitespace(Tokenizer *tokenizer) {
     char c = peek_next_character(tokenizer);
 
-    while(c == ' ' || c == '/') {
+    while(c == ' ' || c == '/' || c == '\t') {
         if (c == '/') {
             char next_c = peek_character(tokenizer, 1);
             if (next_c == '/') {
@@ -644,17 +654,37 @@ parse_datetime(Tokenizer *tokenizer) {
     return result;
 }
 
+internal EntryMeta
+parse_entry_meta(Tokenizer *tokenizer) {
+    // LOG_DEBUG("Parsing entry meta from %.*s", DEBUG_TOKENIZER_PREVIEW, tokenizer->input.text);
+    EntryMeta result = {};
+
+    eat_all_whitespace(tokenizer);
+    char *pos = tokenizer->input.text;
+    Datetime begin = parse_datetime(tokenizer);
+    parse_string_line(tokenizer);
+
+    char c = peek_next_character(tokenizer);
+    if (c == '\n') {
+        eat_next_character(tokenizer);
+    }
+
+    if (!tokenizer->has_error) {
+        result.begin = datetime_to_epoch(&begin);
+        result.buffer_pos = cast(uintptr, pos);
+        result.line = tokenizer->line;
+        result.length = tokenizer->input.text - pos;
+    }
+
+    return result;
+}
+
 internal Entry
 parse_entry(Tokenizer *tokenizer) {
-    // LOG_DEBUG("Parsing entry from %.*s", DEBUG_TOKENIZER_PREVIEW, tokenizer->input.text);
+    LOG_DEBUG("Parsing entry from %.*s", DEBUG_TOKENIZER_PREVIEW, tokenizer->input.text);
     Entry result = {};
 
-    // TODO(dgl): @temporary this file_pos is only valid if we use the get_last_line(). Otherwise
-    // it is the position of the current file cursor. However this variable is the starting point
-    // of the entry line we are currently parsing.
-    //result.file_offset = file->file_offset + (tokenizer->input - file->content);
-    //LOG_DEBUG("File offset %lu", result.file_offset);
-
+    eat_all_whitespace(tokenizer);
     result.begin = parse_datetime(tokenizer);
     eat_all_whitespace(tokenizer);
 
@@ -713,6 +743,19 @@ parse_entry_at(Tokenizer *tokenizer, usize offset) {
     set_tokenizer(tokenizer, offset);
     Entry result = parse_entry(tokenizer);
     result.buffer_offset = offset;
+    return result;
+}
+
+// TODO(dgl): make this possible with parse_entry_at. We need to set the tokenizer to a buffer
+// offset. But this offset can be before or after the current position. Maybe the best thing would
+// be storing the buffer address somewhere and do the offset setting based on this address.
+internal Entry
+parse_entry_from_meta(Tokenizer *tokenizer, EntryMeta *meta) {
+    tokenizer->input.data = cast(void *, meta->buffer_pos);
+    tokenizer->input.length = meta->length;
+    tokenizer->line = meta->line;
+
+    Entry result = parse_entry(tokenizer);
     return result;
 }
 
@@ -1276,21 +1319,28 @@ int main(int argc, char** argv) {
                 usize to_sentinel = datetime_to_epoch(&cmdline.report.to);
                 LOG_DEBUG("To sentinel %lu", to_sentinel);
 
-                LOG_DEBUG("Matching Timestamps:");
-                usize total_seconds = 0;
+                EntryMeta entries[1024] = {};
+                int32 entries_count = 0;
                 while(!tokenizer.has_error && tokenizer.input.length > 0) {
-                    Entry entry = parse_entry(&tokenizer);
+                    EntryMeta meta = parse_entry_meta(&tokenizer);
                     eat_all_whitespace(&tokenizer);
 
-                    usize begin = datetime_to_epoch(&entry.begin);
-
-                    if (begin < from_sentinel || begin > to_sentinel) {
-                        continue;
+                    if (meta.begin > from_sentinel && meta.begin < to_sentinel) {
+                        assert(entries_count < array_count(entries), "EntryMeta array overflow");
+                        entries[entries_count++] = meta;
                     }
+                }
+
+                usize total_seconds = 0;
+                for (int32 index = 0; index < entries_count; ++index) {
+                    EntryMeta *meta = entries + index;
+
+                    Entry entry = parse_entry_from_meta(&tokenizer, meta);
+                    if (entry.end.year == 0) entry.end = get_timestamp();
 
                     usize end = datetime_to_epoch(&entry.end);
-                    assert(begin < end, "End time cannot be larger than begin time");
-                    usize difftime = end - begin;
+                    assert(meta->begin < end, "End time cannot be larger than begin time");
+                    usize difftime = end - meta->begin;
                     total_seconds += difftime;
 
                     int32 hours = cast(int32, difftime / 3600);
