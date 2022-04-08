@@ -20,9 +20,12 @@ TODO(dgl):
     - Better commandline errors (currently we get segfaults)
 
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
-#define DEBUG 1
+#define DEBUG 0
 #define DEBUG_TOKENIZER_PREVIEW 20
 #define MAX_FILENAME_SIZE 4096
+// NOTE(dgl): used to calculate about how much memory we have to allocate for our
+// entry buffer.
+#define AVERAGE_CHARS_PER_LINE 120
 
 #include <stdio.h>
 #include <time.h>
@@ -177,11 +180,11 @@ get_wall_clock()
     return(result);
 }
 
-internal inline real32
+internal inline real64
 get_ms_elapsed(struct timespec start, struct timespec end)
 {
-    real32 result = (real32)(end.tv_sec - start.tv_sec) +
-                    ((real32)(end.tv_nsec - start.tv_nsec) * 1e-6f);
+    real64 result = (real64)(end.tv_sec - start.tv_sec) +
+                    ((real64)(end.tv_nsec - start.tv_nsec) * 1e-6f);
     return(result);
 }
 
@@ -324,7 +327,7 @@ write_entry_to_buffer(Entry *entry, Buffer *buffer) {
     assert(entry->buffer_offset + len <= buffer->cap, "Buffer overflow. Please increase the buffer size before writing the entry");
     buffer->data_count = entry->buffer_offset;
 
-    // TODO(dgl): we overwrite the buffer data, which is set in the annotation. We need to cache this annotation line before memset...
+    // NOTE(dgl): we overwrite the buffer data, which is set in the annotation. We need to cache this annotation line before memset...
     char *annotation_cache = 0;
     if (entry->annotation.data) {
         annotation_cache = cast(char *, malloc(entry->annotation.length + 1));
@@ -911,8 +914,8 @@ datetime_normalize(Datetime *datetime) {
     datetime->month += datetime_wrap(&datetime->day, 1, 31);
     datetime->year += datetime_wrap(&datetime->month, 1, 12);
 
-    // NOTE(dgl): fixing month
-    int32 month_index = (datetime->month - 3) % 12;
+    // NOTE(dgl): fixing month (month_index go optimized out)
+    int32 month_index = (datetime->month - 3) % (array_count(days_in_month) - 1);
     int32 days = days_in_month[month_index];
     if (month_index == array_count(days_in_month) - 1 &&
         !_is_leap_year(datetime->year)) {
@@ -1319,29 +1322,43 @@ int main(int argc, char** argv) {
                 usize to_sentinel = datetime_to_epoch(&cmdline.report.to);
                 LOG_DEBUG("To sentinel %lu", to_sentinel);
 
-                EntryMeta entries[1024] = {};
+                EntryMeta *entries = cast(EntryMeta *, malloc(800000 * sizeof(EntryMeta)));
                 int32 entries_count = 0;
                 while(!tokenizer.has_error && tokenizer.input.length > 0) {
                     EntryMeta meta = parse_entry_meta(&tokenizer);
                     eat_all_whitespace(&tokenizer);
 
                     if (meta.begin > from_sentinel && meta.begin < to_sentinel) {
-                        assert(entries_count < array_count(entries), "EntryMeta array overflow");
+                        assert(entries_count < 800000, "EntryMeta array overflow");
                         entries[entries_count++] = meta;
                     }
                 }
 
                 usize total_seconds = 0;
+                usize daily_seconds = 0;
+                int32 last_day = 0;
                 for (int32 index = 0; index < entries_count; ++index) {
                     EntryMeta *meta = entries + index;
 
                     Entry entry = parse_entry_from_meta(&tokenizer, meta);
                     if (entry.end.year == 0) entry.end = get_timestamp();
-
                     usize end = datetime_to_epoch(&entry.end);
                     assert(meta->begin < end, "End time cannot be larger than begin time");
                     usize difftime = end - meta->begin;
+
                     total_seconds += difftime;
+
+                    if (entry.begin.day != last_day && last_day > 0) {
+                        int32 daily_hours = cast(int32, daily_seconds / 3600);
+                        daily_seconds = daily_seconds - (daily_hours * 3600);
+                        int32 daily_minutes = cast(int32, daily_seconds / 60);
+                        daily_seconds = daily_seconds - (daily_minutes * 60);
+                        printf("DAILY HOURS: %02d:%02d:%02d hs\n\n", daily_hours, daily_minutes, cast(int32, daily_seconds));
+                        daily_seconds = 0;
+                    }
+
+                    daily_seconds += difftime;
+                    last_day = entry.begin.day;
 
                     int32 hours = cast(int32, difftime / 3600);
                     difftime = difftime - (hours * 3600);
@@ -1376,6 +1393,12 @@ int main(int argc, char** argv) {
                           minutes,
                           seconds);
                 }
+
+                int32 daily_hours = cast(int32, daily_seconds / 3600);
+                daily_seconds = daily_seconds - (daily_hours * 3600);
+                int32 daily_minutes = cast(int32, daily_seconds / 60);
+                daily_seconds = daily_seconds - (daily_minutes * 60);
+                printf("DAILY HOURS: %02d:%02d:%02d hs\n\n", daily_hours, daily_minutes, cast(int32, daily_seconds));
 
                 int32 hours = cast(int32, total_seconds / 3600);
                 total_seconds = total_seconds - (hours * 3600);
