@@ -1229,7 +1229,7 @@ report_tag_matches(Commandline *ctx, Entry *entry) {
             char next = peek_next_character(&tokenizer);
             length++;
 
-            if (next == '@') {
+            if (next == '@' || next == '+') {
                 char *begin = tokenizer.input.text;
                 int32 length = 0;
                 while (!is_whitespace(next) && tokenizer.input.length > 0) {
@@ -1317,7 +1317,7 @@ commandline_parse_test_cmd(Commandline *ctx, char** args, int args_count) {
     ctx->report.type = Report_Type_Today;
     while(cursor < args_count) {
         char *arg = args[cursor++];
-        if ((string_compare("@", arg, 1) == 0)) {
+        if ((*arg == '@') || (*arg == '+')) {
             if (ctx->report.filter_count < MAX_TAGS) {
                 String *filter = ctx->report.filter + ctx->report.filter_count;
                 usize length = string_length(arg);
@@ -1354,7 +1354,7 @@ commandline_parse_report_cmd(Commandline *ctx, char** args, int args_count) {
             ctx->report.type = Report_Type_Year;
         } else if ((string_compare("lasty", arg, 5) == 0)) {
             ctx->report.type = Report_Type_Last_Year;
-        } else if ((string_compare("@", arg, 1) == 0)) {
+        } else if ((*arg == '@') || (*arg == '+')) {
             if (ctx->report.filter_count < MAX_TAGS) {
                 String *filter = ctx->report.filter + ctx->report.filter_count;
                 usize length = string_length(arg);
@@ -1574,7 +1574,7 @@ int main(int argc, char** argv) {
                 usize daily_seconds = 0;
                 int32 last_day = 0;
                 // TODO(dgl): use info from entry array to determine what is printed
-                int32 print_flags = Print_Timezone | Print_Seconds;
+                int32 print_flags = Print_Timezone;
                 for (int32 index = 0; index < entries_count; ++index) {
                     EntryMeta *meta = entries + index;
 
