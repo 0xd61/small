@@ -29,7 +29,8 @@ string_from_c_str(char *s) {
 
 internal inline char *
 string_to_c_str(String s) {
-    s.text[s.cap] = 0;
+    assert(s.text != 0, "String text is not defined");
+    //s.text[s.cap] = 0; // TODO(dgl): can't do that with static strings... Need a fix there. How do we check if this is on stack or on heap?
     return s.text;
 }
 

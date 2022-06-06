@@ -8,6 +8,7 @@
 pkgs.mkShell.override {stdenv = pkgs.llvmPackages_10.stdenv;} {
    buildInputs = with pkgs; [
        shellcheck
+       binutils
    ];
 
    hardeningDisable = [ "fortify" ];

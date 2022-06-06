@@ -16,16 +16,22 @@ TODO(dgl):
         - Only parse begin date and buffer pos and continue to next line.
         - If begin is in our range, put the begin date and pos in an array.
         - Sort the array
+        - filter by tags
         - go through the array and show the datetime differences
     - Better commandline errors (currently we get segfaults)
 
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
-#define DEBUG 0
+#define DEBUG 1
 #define DEBUG_TOKENIZER_PREVIEW 20
 #define MAX_FILENAME_SIZE 4096
 // NOTE(dgl): used to calculate about how much memory we have to allocate for our
 // entry buffer.
 #define AVERAGE_CHARS_PER_LINE 120
+
+// TODO(dgl): @temporary
+#define PRINT_BUFFER_LEN kilobytes(1)
+#define ENTRY_BUFFER_LEN 800000
+#define MAX_TAGS 5
 
 #include <stdio.h>
 #include <time.h>
@@ -34,9 +40,28 @@ TODO(dgl):
 #include <stdlib.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
+#include <sys/ioctl.h>
 #include <errno.h>
 #include <string.h>
 #include <x86intrin.h>
+#include <stdarg.h>
+
+
+// NOTE(dgl): Disable compiler warnings for stb includes
+#if defined(__clang__)
+#pragma clang diagnostic push
+#if __clang_major__ > 7
+#pragma clang diagnostic ignored "-Wimplicit-int-float-conversion"
+#endif
+#pragma clang diagnostic ignored "-Wsign-conversion"
+#pragma clang diagnostic ignored "-Wfloat-conversion"
+#pragma clang diagnostic ignored "-Wimplicit-int-conversion"
+
+#define STB_SPRINTF_IMPLEMENTATION
+#include "helpers/stb_sprintf.h"
+
+#pragma clang diagnostic pop
+#endif
 
 
 #include "helpers/types.h"
@@ -75,7 +100,6 @@ typedef struct {
 } Datetime;
 
 typedef struct {
-    Buffer *buffer; // NOTE(dgl): use for jumping to different positions
     String  input;
 
     int32   column;
@@ -110,6 +134,7 @@ typedef enum {
     Command_Type_CSV,
 #if DEBUG
     Command_Type_Generate,
+    Command_Type_Test,
 #endif
 } Command_Type;
 
@@ -138,7 +163,8 @@ typedef struct {
     Report_Type type;
     Datetime    from;
     Datetime    to;
-    String     *filter;
+    String      filter[MAX_TAGS];
+    int         filter_count;
 } Command_Report;
 
 typedef struct {
@@ -150,6 +176,8 @@ typedef struct {
     Command_Type  command_type;
     bool32        is_valid;
     String        filename;
+    int32         window_columns;
+    int32         window_rows;
     union {
         Command_Start  start;
         Command_Stop   stop;
@@ -163,10 +191,113 @@ typedef struct {
     usize   filesize;
 } File_Stats;
 
+typedef enum {
+    Print_Timezone = 0x1 << 0,
+    Print_Seconds  = 0x1 << 1,
+} Print_Flags;
+
 //
 //
 //
 internal usize max_entry_length(String annotation);
+
+//
+// Printing
+//
+
+internal int32
+print_date(char *buf, Datetime *datetime, int32 flags) {
+    int32 result = stbsp_sprintf(buf, "%04d-%02d-%02d", datetime->year, datetime->month, datetime->day);
+    return result;
+}
+
+internal int32
+print_time(char *buf, Datetime *datetime, int32 flags) {
+    int32 result = 0;
+    result += stbsp_sprintf(buf + result, "%02d:%02d", datetime->hour, datetime->minute);
+    if ((flags & Print_Seconds) != 0) {
+        result += stbsp_sprintf(buf + result, ":%02d", datetime->second);
+    }
+
+    if ((flags & Print_Timezone) != 0) {
+        result += stbsp_sprintf(buf + result, " (%c%02d:%02d", datetime->offset_sign ? '-' : '+', datetime->offset_hour, datetime->offset_minute);
+        if ((flags & Print_Seconds) != 0) {
+            result += stbsp_sprintf(buf + result, ":%02d", datetime->offset_second);
+        }
+        result += stbsp_sprintf(buf + result, ")");
+    }
+
+    return result;
+}
+
+internal int32
+print_hours(char *buf, usize seconds, int32 flags) {
+    int32 result = 0;
+    Datetime time = {};
+    time.hour = cast(int32, seconds / 3600);
+    seconds = seconds - (time.hour * 3600);
+    time.minute = cast(int32, seconds / 60);
+    seconds = seconds - (time.minute * 60);
+    time.second = cast(int32, seconds);
+
+    flags &= ~Print_Timezone;
+    result = print_time(buf, &time, flags);
+
+    return result;
+}
+
+internal void
+print_datetime(int32 flags, char *fmt, ...) {
+    usize fmt_len = string_length(fmt);
+    void *format = malloc(fmt_len + 1);
+    char *cursor = cast(char *, format);
+    string_copy(fmt, fmt_len, cursor, fmt_len + 1);
+
+    va_list args;
+    va_start(args, fmt);
+    char buffer[PRINT_BUFFER_LEN] = {};
+    char *buf = buffer;
+    while (*cursor) {
+        if (string_compare(cursor, "%td", 3) == 0) {
+            Datetime datetime = va_arg(args, Datetime);
+            int32 count = print_date(buf, &datetime, flags);
+            buf += count;
+            cursor += 3;
+        } else if (string_compare(cursor, "%tt", 3) == 0) {
+            Datetime datetime = va_arg(args, Datetime);
+            int32 count = print_time(buf, &datetime, flags);
+            buf += count;
+            cursor += 3;
+        } else if (string_compare(cursor, "%th", 3) == 0) {
+            usize seconds = va_arg(args, usize);
+            int32 count = print_hours(buf, seconds, flags);
+            buf += count;
+            cursor += 3;
+        } else if (string_compare(cursor, "%ts", 3) == 0) {
+            String text = va_arg(args, String);
+            int32 count = stbsp_sprintf(buf, "%.*s", cast(int32, text.length), text.text);
+            buf += count;
+            cursor += 3;
+        } else {
+            char *pos = cursor;
+            ++cursor;
+            while (*cursor != 0 && *cursor != '%') {
+                ++cursor;
+            }
+            char tmp = *cursor;
+            *cursor = 0;
+            int32 count = stbsp_vsprintf(buf, pos, args);
+            buf += count;
+            *cursor = tmp;
+        }
+    }
+
+    va_end(args);
+    // TODO(dgl): @temporary
+    printf("%s", buffer);
+    free(format);
+}
+
 
 //
 // Timing
@@ -183,8 +314,9 @@ get_wall_clock()
 internal inline real64
 get_ms_elapsed(struct timespec start, struct timespec end)
 {
-    real64 result = (real64)(end.tv_sec - start.tv_sec) +
-                    ((real64)(end.tv_nsec - start.tv_nsec) * 1e-6f);
+    int64 sec = end.tv_sec - start.tv_sec;
+    real64 result = (real64)(sec * 1000) +
+                    ((real64)(end.tv_nsec - start.tv_nsec) * 1e-6);
     return(result);
 }
 
@@ -458,11 +590,22 @@ peek_next_character(Tokenizer *tokenizer) {
     return result;
 }
 
+internal inline bool32
+is_whitespace(char c) {
+    bool32 result = false;
+
+    if (c == ' ' || c == '\t') {
+        result = true;
+    }
+
+    return result;
+}
+
 internal inline void
 eat_all_whitespace(Tokenizer *tokenizer) {
     char c = peek_next_character(tokenizer);
 
-    while(c == ' ' || c == '/' || c == '\t') {
+    while(is_whitespace(c) || c == '/') {
         if (c == '/') {
             char next_c = peek_character(tokenizer, 1);
             if (next_c == '/') {
@@ -1068,12 +1211,48 @@ datetime_to_end_of(Report_Type type, Datetime *datetime) {
     return result;
 }
 
+internal bool32
+report_tag_matches(Commandline *ctx, Entry *entry) {
+    bool32 result = false;
 
-internal int32
-datetime_compare(Datetime *a, Datetime *b) {
-    int32 result = 0;
-    assert(a->offset_hour == 0 && a->offset_minute == 0 && a->offset_second == 0, "Datetime is not UTC");
-    assert(a->offset_hour == 0 && a->offset_minute == 0 && b->offset_second == 0, "Datetime is not UTC");
+    if (ctx->report.filter_count > 0) {
+        Tokenizer tokenizer = {};
+        Buffer buffer = {};
+        buffer.data = entry->annotation.data;
+        buffer.data_count = entry->annotation.length;
+        buffer.cap = entry->annotation.cap;
+        fill_tokenizer(&tokenizer, &buffer);
+
+        char *begin = 0;
+        int32 length = 0;
+        while(!tokenizer.has_error && tokenizer.input.length > 0) {
+            char next = peek_next_character(&tokenizer);
+            length++;
+
+            if (next == '@') {
+                char *begin = tokenizer.input.text;
+                int32 length = 0;
+                while (!is_whitespace(next) && tokenizer.input.length > 0) {
+                    eat_next_character(&tokenizer);
+                    next = peek_next_character(&tokenizer);
+                    ++length;
+                }
+
+                for (int index = 0; index < ctx->report.filter_count; ++index) {
+                    String tag = ctx->report.filter[index];
+
+                    if (tag.length == length && string_compare(string_to_c_str(tag), begin, length) == 0) {
+                        result = true;
+                        return result;
+                    }
+                }
+            }
+            eat_next_character(&tokenizer);
+            eat_all_whitespace(&tokenizer);
+        }
+    } else {
+        result = true;
+    }
 
     return result;
 }
@@ -1130,10 +1309,35 @@ commandline_parse_stop_cmd(Commandline *ctx, char** args, int args_count) {
 
 }
 
+#if DEBUG
+internal void
+commandline_parse_test_cmd(Commandline *ctx, char** args, int args_count) {
+    int32 cursor = 0;
+
+    ctx->report.type = Report_Type_Today;
+    while(cursor < args_count) {
+        char *arg = args[cursor++];
+        if ((string_compare("@", arg, 1) == 0)) {
+            if (ctx->report.filter_count < MAX_TAGS) {
+                String *filter = ctx->report.filter + ctx->report.filter_count;
+                usize length = string_length(arg);
+                filter->length = length;
+                filter->cap = length + 1;
+                filter->text = arg;
+                ctx->report.filter_count++;
+            } else {
+                LOG("Max number of filter exceeded. Filter %s will be ignored", arg);
+            }
+        }
+    }
+}
+#endif
+
 internal void
 commandline_parse_report_cmd(Commandline *ctx, char** args, int args_count) {
     int32 cursor = 0;
 
+    ctx->report.type = Report_Type_Today;
     while(cursor < args_count) {
         char *arg = args[cursor++];
         if ((string_compare("yes", arg, 3) == 0)) {
@@ -1150,8 +1354,17 @@ commandline_parse_report_cmd(Commandline *ctx, char** args, int args_count) {
             ctx->report.type = Report_Type_Year;
         } else if ((string_compare("lasty", arg, 5) == 0)) {
             ctx->report.type = Report_Type_Last_Year;
-        } else {
-            ctx->report.type = Report_Type_Today;
+        } else if ((string_compare("@", arg, 1) == 0)) {
+            if (ctx->report.filter_count < MAX_TAGS) {
+                String *filter = ctx->report.filter + ctx->report.filter_count;
+                usize length = string_length(arg);
+                filter->length = length;
+                filter->cap = length + 1;
+                filter->text = arg;
+                ctx->report.filter_count++;
+            } else {
+                LOG("Max number of filter exceeded. Filter %s will be ignored", arg);
+            }
         }
     }
 
@@ -1183,6 +1396,12 @@ commandline_parse(Commandline *ctx, char** args, int args_count) {
     ctx->is_valid = true;
     ctx->filename = string_from_c_str("~/time.txt");
 
+    struct winsize w;
+    ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
+
+    ctx->window_rows = w.ws_row;
+    ctx->window_columns = w.ws_col;
+
     // NOTE(dgl): without args
     if (args_count == 1) {
         ctx->command_type = Command_Type_Report;
@@ -1201,6 +1420,8 @@ commandline_parse(Commandline *ctx, char** args, int args_count) {
 #if DEBUG
         } else if (string_compare("gen", command, 3) == 0) {
             ctx->command_type = Command_Type_Generate;
+        } else if (string_compare("test", command, 4) == 0) {
+            ctx->command_type = Command_Type_Test;
 #endif
         } else {
             --cursor;
@@ -1237,6 +1458,12 @@ commandline_parse(Commandline *ctx, char** args, int args_count) {
                     commandline_parse_csv_cmd(ctx, args, args_count);
                     PRINT_DEBUG("\tcommand=csv\n");
                 } break;
+#if DEBUG
+                case Command_Type_Test: {
+                    commandline_parse_test_cmd(ctx, args, args_count);
+                    PRINT_DEBUG("\tcommand=test\n");
+                } break;
+#endif
                 default:
                     // NOTE(dgl): something went wrong
                     ctx->is_valid = false;
@@ -1244,6 +1471,12 @@ commandline_parse(Commandline *ctx, char** args, int args_count) {
         }
     }
 }
+
+// TODO(dgl): sort entries by start time
+// typedef struct Sort_Entry {
+//     int32 sort_key;
+//     int32 index;
+// } Sort_Entry;
 
 // TODO(dgl): Help command
 
@@ -1322,92 +1555,57 @@ int main(int argc, char** argv) {
                 usize to_sentinel = datetime_to_epoch(&cmdline.report.to);
                 LOG_DEBUG("To sentinel %lu", to_sentinel);
 
-                EntryMeta *entries = cast(EntryMeta *, malloc(800000 * sizeof(EntryMeta)));
+                EntryMeta *entries = cast(EntryMeta *, malloc(ENTRY_BUFFER_LEN * sizeof(EntryMeta)));
                 int32 entries_count = 0;
                 while(!tokenizer.has_error && tokenizer.input.length > 0) {
                     EntryMeta meta = parse_entry_meta(&tokenizer);
                     eat_all_whitespace(&tokenizer);
 
                     if (meta.begin > from_sentinel && meta.begin < to_sentinel) {
-                        assert(entries_count < 800000, "EntryMeta array overflow");
+                        assert(entries_count < ENTRY_BUFFER_LEN, "EntryMeta array overflow");
                         entries[entries_count++] = meta;
                     }
                 }
 
+                // TODO(dgl): sort
+
+
                 usize total_seconds = 0;
                 usize daily_seconds = 0;
                 int32 last_day = 0;
+                // TODO(dgl): use info from entry array to determine what is printed
+                int32 print_flags = Print_Timezone | Print_Seconds;
                 for (int32 index = 0; index < entries_count; ++index) {
                     EntryMeta *meta = entries + index;
 
                     Entry entry = parse_entry_from_meta(&tokenizer, meta);
-                    if (entry.end.year == 0) entry.end = get_timestamp();
-                    usize end = datetime_to_epoch(&entry.end);
-                    assert(meta->begin < end, "End time cannot be larger than begin time");
-                    usize difftime = end - meta->begin;
 
-                    total_seconds += difftime;
+                    if (report_tag_matches(&cmdline, &entry)) {
+                        if (entry.end.year == 0) entry.end = get_timestamp();
+                        usize end = datetime_to_epoch(&entry.end);
+                        assert(meta->begin < end, "End time cannot be larger than begin time");
+                        usize difftime = end - meta->begin;
 
-                    if (entry.begin.day != last_day && last_day > 0) {
-                        int32 daily_hours = cast(int32, daily_seconds / 3600);
-                        daily_seconds = daily_seconds - (daily_hours * 3600);
-                        int32 daily_minutes = cast(int32, daily_seconds / 60);
-                        daily_seconds = daily_seconds - (daily_minutes * 60);
-                        printf("DAILY HOURS: %02d:%02d:%02d hs\n\n", daily_hours, daily_minutes, cast(int32, daily_seconds));
-                        daily_seconds = 0;
+                        total_seconds += difftime;
+
+                        if (entry.begin.day != last_day && last_day > 0) {
+                            print_datetime(print_flags, "\t\t%th hs\n", daily_seconds);
+                            daily_seconds = 0;
+                        }
+
+                        if (daily_seconds == 0) {
+                            print_datetime(print_flags, "%td\t", entry.begin);
+                        }
+
+                        daily_seconds += difftime;
+                        last_day = entry.begin.day;
+
+                        print_datetime(print_flags, "\n\t%tt - %tt => \t %th hs", entry.begin, entry.end, difftime, entry.annotation);
                     }
-
-                    daily_seconds += difftime;
-                    last_day = entry.begin.day;
-
-                    int32 hours = cast(int32, difftime / 3600);
-                    difftime = difftime - (hours * 3600);
-                    int32 minutes = cast(int32, difftime / 60);
-                    difftime = difftime - (minutes * 60);
-                    int32 seconds = cast(int32, difftime);
-
-                    printf("%04d-%02d-%02dT%02d:%02d:%02d%c%02d:%02d:%02d - "
-                           "%04d-%02d-%02dT%02d:%02d:%02d%c%02d:%02d:%02d => "
-                           "%02d:%02d:%02d hs\n",
-                          entry.begin.year,
-                          entry.begin.month,
-                          entry.begin.day,
-                          entry.begin.hour,
-                          entry.begin.minute,
-                          entry.begin.second,
-                          entry.begin.offset_sign ? '-' : '+',
-                          entry.begin.offset_hour,
-                          entry.begin.offset_minute,
-                          entry.begin.offset_second,
-                          entry.end.year,
-                          entry.end.month,
-                          entry.end.day,
-                          entry.end.hour,
-                          entry.end.minute,
-                          entry.end.second,
-                          entry.end.offset_sign ? '-' : '+',
-                          entry.end.offset_hour,
-                          entry.end.offset_minute,
-                          entry.end.offset_second,
-                          hours,
-                          minutes,
-                          seconds);
                 }
 
-                int32 daily_hours = cast(int32, daily_seconds / 3600);
-                daily_seconds = daily_seconds - (daily_hours * 3600);
-                int32 daily_minutes = cast(int32, daily_seconds / 60);
-                daily_seconds = daily_seconds - (daily_minutes * 60);
-                printf("DAILY HOURS: %02d:%02d:%02d hs\n\n", daily_hours, daily_minutes, cast(int32, daily_seconds));
-
-                int32 hours = cast(int32, total_seconds / 3600);
-                total_seconds = total_seconds - (hours * 3600);
-                int32 minutes = cast(int32, total_seconds / 60);
-                total_seconds = total_seconds - (minutes * 60);
-                int32 seconds = cast(int32, total_seconds);
-
-                printf("TOTAL HOURS: %02d:%02d:%02d hs\n", hours, minutes, seconds);
-
+                print_datetime(print_flags, "\t\t%th hs\n\n", daily_seconds);
+                print_datetime(print_flags, "Total hours: %th hs\n", total_seconds);
             } break;
             case Command_Type_CSV: {
 
@@ -1415,6 +1613,13 @@ int main(int argc, char** argv) {
     #if DEBUG
             case Command_Type_Generate: {
 
+            } break;
+            case Command_Type_Test: {
+                String annotation = string_from_c_str("das ist ein test mit @test @test2 und @foobar");
+                Entry entry = {};
+                entry.annotation = annotation;
+
+                LOG_DEBUG("Tag match: %d", report_tag_matches(&cmdline, &entry));
             } break;
     #endif
             default:

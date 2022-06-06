@@ -75,10 +75,20 @@ debug() {
     GDB_FRONTEND="$(which gf2)"
 
     if [ -z "${GDB_FRONTEND}" ]; then
-        gdb "${BUILD_DIR}/${FILE%.*}"
+        gdb "${BUILD_DIR}/${FILE%.*}" &
     else
-        gf2 "${BUILD_DIR}/${FILE%.*}"
+        gf2 "${BUILD_DIR}/${FILE%.*}" &
     fi
+}
+
+perf() {
+    FILE="$1"
+    [ -z "${FILE}" ] && { echo "Please pass the c file of the tool you want to debug."; exit 1; }
+
+    ARGS="${@:2}"
+    echo "Debug application ${FILE%.*}"
+
+    perf
 }
 
 clean() {
@@ -125,6 +135,11 @@ else
         fetch  ${ARGS}
         build  ${ARGS}
         deploy ${ARGS}
+    ;;
+    perf)
+        fetch ${ARGS}
+        build ${ARGS}
+        perf ${ARGS}
     ;;
 
     all)
