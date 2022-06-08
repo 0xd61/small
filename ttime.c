@@ -13,12 +13,13 @@ Example:
 TODO(dgl):
     - segfault if no annotation at start
     - Better parsing:
-        - Only parse begin date and buffer pos and continue to next line.
-        - If begin is in our range, put the begin date and pos in an array.
         - Sort the array
-        - filter by tags
-        - go through the array and show the datetime differences
     - Better commandline errors (currently we get segfaults)
+    - Fix commandline parsing (file flag can be at every position of args)
+    - Memory Management
+
+Usage:
+    ttime <flags> [command] [command args]
 
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
 #define DEBUG 1
@@ -125,6 +126,13 @@ typedef struct {
     usize      buffer_offset; /* TODO(dgl): replace with EntryMeta  */
 } Entry;
 
+typedef struct {
+    String  filename;
+    usize   filesize;
+    bool32  exists;
+} File_Stats;
+
+
 typedef enum {
     Command_Type_Noop,
     Command_Type_Start,
@@ -175,7 +183,7 @@ typedef struct {
 typedef struct {
     Command_Type  command_type;
     bool32        is_valid;
-    String        filename;
+    File_Stats    file;
     int32         window_columns;
     int32         window_rows;
     union {
@@ -185,11 +193,6 @@ typedef struct {
         Command_CSV    csv;
     };
 } Commandline;
-
-typedef struct {
-    String  filename;
-    usize   filesize;
-} File_Stats;
 
 typedef enum {
     Print_Timezone = 0x1 << 0,
@@ -331,15 +334,17 @@ usize get_rdtsc(){
 internal Buffer
 allocate_filebuffer(File_Stats *file, usize padding) {
     Buffer result = {};
-    result.data_count = 0;
-    result.cap = file->filesize + padding;
+    if (file->exists) {
+        result.data_count = 0;
+        result.cap = file->filesize + padding;
 
 #if DEBUG
-    void *base_address = cast(void *, terabytes(2));
+        void *base_address = cast(void *, terabytes(2));
 #else
-    void *base_address = 0;
+        void *base_address = 0;
 #endif
-    result.data = mmap(base_address, result.cap, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+        result.data = mmap(base_address, result.cap, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+    }
 
     return result;
 }
@@ -348,14 +353,15 @@ allocate_filebuffer(File_Stats *file, usize padding) {
 internal File_Stats
 get_file_stats(String filename) {
     File_Stats result = {};
+    result.filename = filename;
 
     struct stat file_stat = {};
     int err = stat(filename.text, &file_stat);
     if (err == 0) {
-        result.filename = filename;
         result.filesize = cast(usize, file_stat.st_size);
+        result.exists = true;
     } else {
-        LOG("Failed to get file stats for file %s: err %d", string_to_c_str(filename), err);
+        LOG_DEBUG("Failed to get file stats for file %s: err %d", string_to_c_str(filename), err);
     }
 
     return result;
@@ -1394,7 +1400,13 @@ commandline_parse_csv_cmd(Commandline *ctx, char** args, int args_count) {
 internal void
 commandline_parse(Commandline *ctx, char** args, int args_count) {
     ctx->is_valid = true;
-    ctx->filename = string_from_c_str("~/time.txt");
+
+    File_Stats home = get_file_stats(string_from_c_str("~/time.txt"));
+    File_Stats local = get_file_stats(string_from_c_str("./time.txt"));
+    ctx->file = local;
+    if (!ctx->file.exists) {
+        ctx->file = home;
+    }
 
     struct winsize w;
     ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
@@ -1402,45 +1414,54 @@ commandline_parse(Commandline *ctx, char** args, int args_count) {
     ctx->window_rows = w.ws_row;
     ctx->window_columns = w.ws_col;
 
+    // NOTE(dgl): default command type (if nothing else found)
+    ctx->command_type = Command_Type_Report;
+
     // NOTE(dgl): without args
     if (args_count == 1) {
-        ctx->command_type = Command_Type_Report;
+        // TODO(dgl): tbd
     } else {
         int cursor = 1;
-        char *command = args[cursor++];
 
-        if (string_compare("sta", command, 3) == 0) {
-            ctx->command_type = Command_Type_Start;
-        } else if (string_compare("sto", command, 3) == 0) {
-            ctx->command_type = Command_Type_Stop;
-        } else if (string_compare("rep", command, 3) == 0) {
-            ctx->command_type = Command_Type_Report;
-        } else if (string_compare("csv", command, 3) == 0) {
-            ctx->command_type = Command_Type_CSV;
+        while (cursor < args_count) {
+            char *arg = args[cursor++];
+
+            if (string_compare("-f", arg, 2) == 0) {
+                ctx->file = get_file_stats(string_from_c_str(args[cursor++]));
+                // TODO(dgl): if a file flag was provided and the file
+                // does not exist, we should create it.
+            } else if (string_compare("sta", arg, 3) == 0) {
+                ctx->command_type = Command_Type_Start;
+                break;
+            } else if (string_compare("sto", arg, 3) == 0) {
+                ctx->command_type = Command_Type_Stop;
+                break;
+            } else if (string_compare("rep", arg, 3) == 0) {
+                ctx->command_type = Command_Type_Report;
+                break;
+            } else if (string_compare("csv", arg, 3) == 0) {
+                ctx->command_type = Command_Type_CSV;
+                break;
 #if DEBUG
-        } else if (string_compare("gen", command, 3) == 0) {
-            ctx->command_type = Command_Type_Generate;
-        } else if (string_compare("test", command, 4) == 0) {
-            ctx->command_type = Command_Type_Test;
+            } else if (string_compare("gen", arg, 3) == 0) {
+                ctx->command_type = Command_Type_Generate;
+                break;
+            } else if (string_compare("test", arg, 4) == 0) {
+                ctx->command_type = Command_Type_Test;
+                break;
 #endif
-        } else {
-            --cursor;
-            ctx->command_type = Command_Type_Report;
-            LOG_DEBUG("Unknown command: %s. Falling back to the report command", command);
+            }
+        }
+
+        if (cursor >= args_count) {
+            cursor = 1;
         }
 
         args += cursor;
         args_count -= cursor;
         cursor = 0;
-        if(ctx->is_valid) {
-            while(cursor < args_count) {
-                char *arg = args[cursor++];
-                if (string_compare("-f", arg, 2) == 0) {
-                    ctx->filename = string_from_c_str(args[cursor++]);
-                }
-            }
-
-            PRINT_DEBUG("Running ttime with these args:\n\tfilename=%s\n", string_to_c_str(ctx->filename));
+        if (ctx->is_valid) {
+            PRINT_DEBUG("Running ttime with these args:\n\tfilename=%s\n", string_to_c_str(ctx->file.filename));
             switch (ctx->command_type) {
                 case Command_Type_Start: {
                     commandline_parse_start_cmd(ctx, args, args_count);
@@ -1470,6 +1491,11 @@ commandline_parse(Commandline *ctx, char** args, int args_count) {
             }
         }
     }
+
+    if (!ctx->file.exists) {
+        ctx->is_valid = false;
+        LOG("File %s does not exist. To create it automatically use the -f flag", string_to_c_str(ctx->file.filename));
+    }
 }
 
 // TODO(dgl): sort entries by start time
@@ -1492,7 +1518,6 @@ int main(int argc, char** argv) {
     commandline_parse(&cmdline, argv, argc);
 
     if (cmdline.is_valid) {
-        // TODO(dgl): check if the time.txt file exists!
         switch(cmdline.command_type) {
             case Command_Type_Start: {
                 Entry new_entry = {};
@@ -1501,9 +1526,8 @@ int main(int argc, char** argv) {
                 new_entry.annotation = cmdline.start.annotation;
                 usize entry_len = max_entry_length(new_entry.annotation);
 
-                File_Stats file = get_file_stats(cmdline.filename);
-                Buffer buffer = allocate_filebuffer(&file, entry_len);
-                read_entire_file(&file, &buffer);
+                Buffer buffer = allocate_filebuffer(&cmdline.file, entry_len);
+                read_entire_file(&cmdline.file, &buffer);
 
                 new_entry.buffer_offset = get_end_of_file_offset(&buffer);
 
@@ -1517,16 +1541,15 @@ int main(int argc, char** argv) {
                         LOG("Time interval currently active with annotation: %s", string_to_c_str(last_entry.annotation));
                     } else {
                         write_entry_to_buffer(&new_entry, &buffer);
-                        write_entire_file(&file, &buffer);
+                        write_entire_file(&cmdline.file, &buffer);
                     }
                 }
             } break;
             case Command_Type_Stop: {
                 usize entry_len = max_entry_length(string_from_c_str(""));
 
-                File_Stats file = get_file_stats(cmdline.filename);
-                Buffer buffer = allocate_filebuffer(&file, entry_len);
-                read_entire_file(&file, &buffer);
+                Buffer buffer = allocate_filebuffer(&cmdline.file, entry_len);
+                read_entire_file(&cmdline.file, &buffer);
 
                 Tokenizer tokenizer = {};
                 fill_tokenizer(&tokenizer, &buffer);
@@ -1539,14 +1562,13 @@ int main(int argc, char** argv) {
                     } else {
                         last_entry.end = get_timestamp();
                         write_entry_to_buffer(&last_entry, &buffer);
-                        write_entire_file(&file, &buffer);
+                        write_entire_file(&cmdline.file, &buffer);
                     }
                 }
             } break;
             case Command_Type_Report: {
-                File_Stats file = get_file_stats(cmdline.filename);
-                Buffer buffer = allocate_filebuffer(&file, 0);
-                read_entire_file(&file, &buffer);
+                Buffer buffer = allocate_filebuffer(&cmdline.file, 0);
+                read_entire_file(&cmdline.file, &buffer);
                 Tokenizer tokenizer = {};
                 fill_tokenizer(&tokenizer, &buffer);
 
