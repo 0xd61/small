@@ -1,11 +1,9 @@
+#ifndef MEMORY_H_INCLUDE
+#define MEMORY_H_INCLUDE
+
 #include <string.h>
 
 #define DEFAULT_ALIGNMENT (2*sizeof(void *))
-#define mem_arena_push_struct(arena, type) (type *)mem_arena_alloc_align(arena, sizeof(type), DEFAULT_ALIGNMENT)
-#define mem_arena_push_array(arena, type, count) (type *)mem_arena_alloc_align(arena, (count)*sizeof(type), DEFAULT_ALIGNMENT)
-#define mem_arena_push(arena, size) mem_arena_alloc_align(arena, size, DEFAULT_ALIGNMENT)
-#define mem_arena_resize_array(arena, type, current_base, current_size, new_size) (type *) mem_arena_resize_align(arena, (uint8 *)(current_base), (current_size)*sizeof(type), (new_size)*sizeof(type), DEFAULT_ALIGNMENT)
-#define mem_arena_resize(arena, current_base, current_size, new_size) mem_arena_resize_align(arena, current_base, current_size, new_size, DEFAULT_ALIGNMENT)
 
 typedef usize Mem_Index;
 
@@ -21,6 +19,22 @@ typedef struct Mem_Temp_Arena {
     Mem_Index curr_offset;
     Mem_Index prev_offset;
 } Mem_Temp_Arena;
+
+internal void mem_arena_init(Mem_Arena *arena, uint8 *base, Mem_Index size);
+#define mem_arena_push_struct(arena, type) (type *)mem_arena_alloc_align(arena, sizeof(type), DEFAULT_ALIGNMENT)
+#define mem_arena_push_array(arena, type, count) (type *)mem_arena_alloc_align(arena, (count)*sizeof(type), DEFAULT_ALIGNMENT)
+#define mem_arena_push(arena, size) mem_arena_alloc_align(arena, size, DEFAULT_ALIGNMENT)
+internal void * mem_arena_alloc_align(Mem_Arena *arena, Mem_Index size, Mem_Index align);
+#define mem_arena_resize_array(arena, type, current_base, current_size, new_size) (type *) mem_arena_resize_align(arena, cast(uint8 *, current_base), (current_size)*sizeof(type), (new_size)*sizeof(type), DEFAULT_ALIGNMENT)
+#define mem_arena_resize(arena, current_base, current_size, new_size) mem_arena_resize_align(arena, current_base, current_size, new_size, DEFAULT_ALIGNMENT)
+internal void * mem_arena_resize_align(Mem_Arena *arena, uint8 *current_base, Mem_Index current_size, Mem_Index new_size, usize align);
+internal void mem_arena_free_all(Mem_Arena *arena);
+internal Mem_Temp_Arena mem_arena_begin_temp(Mem_Arena *arena);
+internal void mem_arena_end_temp(Mem_Temp_Arena temp);
+
+#endif // MEMORY_H_INCLUDE
+
+#ifdef MEMORY_IMPLEMENTATION
 
 internal uintptr
 _align_forward_uintptr(uintptr base, usize align) {
@@ -112,4 +126,4 @@ mem_arena_end_temp(Mem_Temp_Arena temp) {
     temp.arena->curr_offset = temp.curr_offset;
 }
 
-
+#endif // MEMORY_IMPLEMENTATION

@@ -16,6 +16,7 @@ TODO(dgl):
         - Sort the array
     - Better commandline errors (currently we get segfaults)
     - Better printing (log vs output)
+    - Parsing error on start when last line was a comment
 
 Usage:
     ttime <flags> [command] [command args]
@@ -29,7 +30,6 @@ Usage:
 #define AVERAGE_CHARS_PER_LINE 120
 
 // TODO(dgl): @temporary
-#define PRINT_BUFFER_LEN kilobytes(1)
 #define ENTRY_BUFFER_LEN 800000
 #define MAX_TAGS 5
 
@@ -46,7 +46,6 @@ Usage:
 #include <x86intrin.h>
 #include <stdarg.h>
 
-
 // NOTE(dgl): Disable compiler warnings for stb includes
 #if defined(__clang__)
 #pragma clang diagnostic push
@@ -57,16 +56,18 @@ Usage:
 #pragma clang diagnostic ignored "-Wfloat-conversion"
 #pragma clang diagnostic ignored "-Wimplicit-int-conversion"
 
-#define STB_SPRINTF_IMPLEMENTATION
-#include "helpers/stb_sprintf.h"
-
 #pragma clang diagnostic pop
 #endif
 
 
 #include "helpers/types.h"
-#include "helpers/memory.c"
-#include "helpers/string.c"
+#define STRING_IMPLEMENTATION
+#include "helpers/string.h"
+#define MEMORY_IMPLEMENTATION
+#include "helpers/memory.h"
+
+#define STB_SPRINTF_IMPLEMENTATION
+#include "helpers/stb_sprintf.h"
 
 typedef struct {
     void  *data;
@@ -209,34 +210,30 @@ internal usize max_entry_length(String annotation);
 // Printing
 //
 
-internal int32
-print_date(char *buf, Datetime *datetime, int32 flags) {
-    int32 result = stbsp_sprintf(buf, "%04d-%02d-%02d", datetime->year, datetime->month, datetime->day);
-    return result;
+internal void
+print_date(String_Builder *builder, Datetime *datetime, int32 flags) {
+    string_append(builder, "%04d-%02d-%02d", datetime->year, datetime->month, datetime->day);
 }
 
-internal int32
-print_time(char *buf, Datetime *datetime, int32 flags) {
-    int32 result = 0;
-    result += stbsp_sprintf(buf + result, "%02d:%02d", datetime->hour, datetime->minute);
+internal void
+print_time(String_Builder *builder, Datetime *datetime, int32 flags) {
+    string_append(builder, "%02d:%02d", datetime->hour, datetime->minute);
+
     if ((flags & Print_Seconds) != 0) {
-        result += stbsp_sprintf(buf + result, ":%02d", datetime->second);
+        string_append(builder, ":%02d", datetime->second);
     }
 
     if ((flags & Print_Timezone) != 0) {
-        result += stbsp_sprintf(buf + result, " (%c%02d:%02d", datetime->offset_sign ? '-' : '+', datetime->offset_hour, datetime->offset_minute);
+        string_append(builder, " (%c%02d:%02d", datetime->offset_sign ? '-' : '+', datetime->offset_hour, datetime->offset_minute);
         if ((flags & Print_Seconds) != 0) {
-            result += stbsp_sprintf(buf + result, ":%02d", datetime->offset_second);
+            string_append(builder, ":%02d", datetime->offset_second);
         }
-        result += stbsp_sprintf(buf + result, ")");
+        string_append(builder, ")");
     }
-
-    return result;
 }
 
-internal int32
-print_hours(char *buf, usize seconds, int32 flags) {
-    int32 result = 0;
+internal void
+print_hours(String_Builder *builder, usize seconds, int32 flags) {
     Datetime time = {};
     time.hour = cast(int32, seconds / 3600);
     seconds = seconds - (time.hour * 3600);
@@ -245,9 +242,7 @@ print_hours(char *buf, usize seconds, int32 flags) {
     time.second = cast(int32, seconds);
 
     flags &= ~Print_Timezone;
-    result = print_time(buf, &time, flags);
-
-    return result;
+    print_time(builder, &time, flags);
 }
 
 internal void
@@ -258,31 +253,26 @@ print_datetime(Mem_Arena *arena, int32 flags, char *fmt, ...) {
         char *cursor = mem_arena_push_array(tmp_arena.arena, char, fmt_len + 1);
         string_copy(fmt, fmt_len, cursor, fmt_len + 1);
 
+        String_Builder builder = string_builder_init(tmp_arena.arena, 128);
+
         va_list args;
         va_start(args, fmt);
-        // TODO(dgl): use string builder with memory arena
-        char buffer[PRINT_BUFFER_LEN] = {};
-        char *buf = buffer;
         while (*cursor) {
             if (string_compare(cursor, "%td", 3) == 0) {
                 Datetime datetime = va_arg(args, Datetime);
-                int32 count = print_date(buf, &datetime, flags);
-                buf += count;
+                print_date(&builder, &datetime, flags);
                 cursor += 3;
             } else if (string_compare(cursor, "%tt", 3) == 0) {
                 Datetime datetime = va_arg(args, Datetime);
-                int32 count = print_time(buf, &datetime, flags);
-                buf += count;
+                print_time(&builder, &datetime, flags);
                 cursor += 3;
             } else if (string_compare(cursor, "%th", 3) == 0) {
                 usize seconds = va_arg(args, usize);
-                int32 count = print_hours(buf, seconds, flags);
-                buf += count;
+                print_hours(&builder, seconds, flags);
                 cursor += 3;
             } else if (string_compare(cursor, "%ts", 3) == 0) {
                 String text = va_arg(args, String);
-                int32 count = stbsp_sprintf(buf, "%.*s", cast(int32, text.length), text.text);
-                buf += count;
+                string_append(&builder, "%.*s", cast(int32, text.length), text.text);
                 cursor += 3;
             } else {
                 char *pos = cursor;
@@ -292,15 +282,15 @@ print_datetime(Mem_Arena *arena, int32 flags, char *fmt, ...) {
                 }
                 char tmp = *cursor;
                 *cursor = 0;
-                int32 count = stbsp_vsprintf(buf, pos, args);
-                buf += count;
+                string_append(&builder, pos, args);
                 *cursor = tmp;
             }
         }
 
         va_end(args);
         // TODO(dgl): @temporary
-        printf("%s", buffer);
+        String result = string_builder_to_string(&builder);
+        printf("%s", string_to_c_str(result));
     }
     mem_arena_end_temp(tmp_arena);
 }
@@ -482,7 +472,8 @@ write_entry_to_buffer(Entry *entry, Buffer *buffer) {
     memset(dest, 0, len + 1);
     *dest++ = '\n';
 
-    int printed = sprintf(dest, "%04d-%02d-%02dT%02d:%02d:%02d%c%02d:%02d:%02d | ",
+    // TODO(dgl): use string builder
+    int printed = stbsp_sprintf(dest, "%04d-%02d-%02dT%02d:%02d:%02d%c%02d:%02d:%02d | ",
                            entry->begin.year,
                            entry->begin.month,
                            entry->begin.day,
@@ -496,7 +487,7 @@ write_entry_to_buffer(Entry *entry, Buffer *buffer) {
     dest += printed;
     buffer->data_count += printed;
     if (entry->end.year > 0) {
-        printed = sprintf(dest, "%04d-%02d-%02dT%02d:%02d:%02d%c%02d:%02d:%02d | ",
+        printed = stbsp_sprintf(dest, "%04d-%02d-%02dT%02d:%02d:%02d%c%02d:%02d:%02d | ",
                            entry->end.year,
                            entry->end.month,
                            entry->end.day,
@@ -510,21 +501,21 @@ write_entry_to_buffer(Entry *entry, Buffer *buffer) {
        dest += printed;
        buffer->data_count += printed;
    } else {
-       printed = sprintf(dest, " | ");
+       printed = stbsp_sprintf(dest, " | ");
        dest += printed;
        buffer->data_count += printed;
    }
 
-    printed = sprintf(dest, "%d | ", entry->task_id);
+    printed = stbsp_sprintf(dest, "%d | ", entry->task_id);
     dest += printed;
     buffer->data_count += printed;
 
     if (entry->annotation.data) {
-        printed = sprintf(dest, "%s\n", annotation_cache);
+        printed = stbsp_sprintf(dest, "%s\n", annotation_cache);
         dest += printed;
         buffer->data_count += printed;
     } else {
-        printed = sprintf(dest, "\n");
+        printed = stbsp_sprintf(dest, "\n");
         dest += printed;
         buffer->data_count += printed;
     }
@@ -1424,19 +1415,23 @@ commandline_parse(Mem_Arena *arena, Commandline *ctx, char** args, int args_coun
     // NOTE(dgl): default command type (if nothing else found)
     ctx->command_type = Command_Type_Report;
 
+    int cursor = 1;
     // NOTE(dgl): without args
     if (args_count == 1) {
         // TODO(dgl): tbd
     } else {
-        int cursor = 1;
-
         while (cursor < args_count) {
             char *arg = args[cursor++];
 
             if (string_compare("-f", arg, 2) == 0) {
-                ctx->file = get_file_stats(string_from_c_str(args[cursor++]));
-                // TODO(dgl): if a file flag was provided and the file
-                // does not exist, we should create it.
+                if (cursor < args_count) {
+                    char *filename = args[cursor++];
+                    ctx->file = get_file_stats(string_from_c_str(filename));
+                    // TODO(dgl): if a file flag was provided and the file
+                    // does not exist, we should create it.
+                } else {
+                    ctx->is_valid = false;
+                }
             } else if (string_compare("sta", arg, 3) == 0) {
                 ctx->command_type = Command_Type_Start;
                 break;
@@ -1463,35 +1458,36 @@ commandline_parse(Mem_Arena *arena, Commandline *ctx, char** args, int args_coun
         args += cursor;
         args_count -= cursor;
         cursor = 0;
-        if (ctx->is_valid) {
-            PRINT_DEBUG("Running ttime with these args:\n\tfilename=%s\n", string_to_c_str(ctx->file.filename));
-            switch (ctx->command_type) {
-                case Command_Type_Start: {
-                    commandline_parse_start_cmd(ctx, args, args_count);
-                    PRINT_DEBUG("\tcommand=start\n\ttask_id=%d\n\tannotation=%s\n", ctx->start.task_id, string_to_c_str(ctx->start.annotation));
-                } break;
-                case Command_Type_Stop: {
-                    commandline_parse_stop_cmd(ctx, args, args_count);
-                    PRINT_DEBUG("\tcommand=stop\n");
-                } break;
-                case Command_Type_Report: {
-                    commandline_parse_report_cmd(ctx, args, args_count);
-                    PRINT_DEBUG("\tcommand=report\n");
-                } break;
-                case Command_Type_CSV: {
-                    commandline_parse_csv_cmd(ctx, args, args_count);
-                    PRINT_DEBUG("\tcommand=csv\n");
-                } break;
+    }
+
+    if (ctx->is_valid) {
+        PRINT_DEBUG("Running ttime with these args:\n\tfilename=%s\n", string_to_c_str(ctx->file.filename));
+        switch (ctx->command_type) {
+            case Command_Type_Start: {
+                commandline_parse_start_cmd(ctx, args, args_count);
+                PRINT_DEBUG("\tcommand=start\n\ttask_id=%d\n\tannotation=%s\n", ctx->start.task_id, string_to_c_str(ctx->start.annotation));
+            } break;
+            case Command_Type_Stop: {
+                commandline_parse_stop_cmd(ctx, args, args_count);
+                PRINT_DEBUG("\tcommand=stop\n");
+            } break;
+            case Command_Type_Report: {
+                commandline_parse_report_cmd(ctx, args, args_count);
+                PRINT_DEBUG("\tcommand=report\n");
+            } break;
+            case Command_Type_CSV: {
+                commandline_parse_csv_cmd(ctx, args, args_count);
+                PRINT_DEBUG("\tcommand=csv\n");
+            } break;
 #if DEBUG
-                case Command_Type_Test: {
-                    commandline_parse_test_cmd(ctx, args, args_count);
-                    PRINT_DEBUG("\tcommand=test\n");
-                } break;
+            case Command_Type_Test: {
+                commandline_parse_test_cmd(ctx, args, args_count);
+                PRINT_DEBUG("\tcommand=test\n");
+            } break;
 #endif
-                default:
-                    // NOTE(dgl): something went wrong
-                    ctx->is_valid = false;
-            }
+            default:
+                // NOTE(dgl): something went wrong
+                ctx->is_valid = false;
         }
     }
 
@@ -1526,8 +1522,8 @@ int main(int argc, char** argv) {
     Mem_Arena permanent_arena = {};
     Mem_Arena transient_arena = {};
 
-    mem_arena_init(&permanent_arena, base_address, megabytes(128));
-    mem_arena_init(&transient_arena, base_address + permanent_arena.size, memory_size - permanent_arena.size);
+    mem_arena_init(&permanent_arena, memory_base, megabytes(128));
+    mem_arena_init(&transient_arena, memory_base + permanent_arena.size, memory_size - permanent_arena.size);
 
     struct timespec start = get_wall_clock();
     Commandline cmdline = {};
@@ -1593,6 +1589,7 @@ int main(int argc, char** argv) {
                 usize to_sentinel = datetime_to_epoch(&cmdline.report.to);
                 LOG_DEBUG("To sentinel %lu", to_sentinel);
 
+                // TODO(dgl): dynamic array
                 EntryMeta *entries = cast(EntryMeta *, malloc(ENTRY_BUFFER_LEN * sizeof(EntryMeta)));
                 int32 entries_count = 0;
                 while(!tokenizer.has_error && tokenizer.input.length > 0) {
