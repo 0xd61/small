@@ -66,6 +66,7 @@ mem_arena_alloc_align(Mem_Arena *arena, Mem_Index size, usize align) {
 
     Mem_Index offset = cast(Mem_Index, new_ptr - cast(uintptr, arena->base)); // revert back to relative offset
 
+    // TODO(dgl): make a proper memory check here and allocate more memory from the os
     assert((offset + size) <= arena->size, "Arena overflow. Cannot allocate size");
 
     void *result = arena->base + offset;
@@ -87,6 +88,7 @@ mem_arena_resize_align(Mem_Arena *arena, uint8 *current_base, Mem_Index current_
         result = current_base;
     }
     else if(arena->base + arena->prev_offset == current_base) {
+        // TODO(dgl): make a proper memory check here and allocate more memory from the os
         assert((arena->prev_offset + new_size) <= arena->size, "Arena overflow. Cannot allocate new size");
         arena->curr_offset = arena->prev_offset + new_size;
         if (new_size > current_size) {

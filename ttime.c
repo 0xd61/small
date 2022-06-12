@@ -12,8 +12,6 @@ Example:
 
 TODO(dgl):
     - Memory Management
-    - Better parsing:
-        - Sort the array
     - Better commandline errors (currently we get segfaults)
     - Better printing (log vs output)
     - Parsing error on start when last line was a comment
@@ -30,7 +28,6 @@ Usage:
 #define AVERAGE_CHARS_PER_LINE 120
 
 // TODO(dgl): @temporary
-#define ENTRY_BUFFER_LEN 800000
 #define MAX_TAGS 5
 
 #include <stdio.h>
@@ -75,6 +72,11 @@ typedef struct {
     usize  cap;
 } Buffer;
 
+typedef struct Sort_Entry {
+    usize sort_key;
+    int32 index;
+} Sort_Entry;
+
 global const int32 days_in_month[] = {31,30,31,30,31,31,30,31,30,31,31,29};
 
 typedef enum {
@@ -112,10 +114,10 @@ typedef struct {
 } Tokenizer;
 
 typedef struct {
-    usize begin; // NOTE(dgl): epoch of begin
+    usize   begin; // NOTE(dgl): epoch of begin
     uintptr buffer_pos;
-    int32 line;
-    usize length;
+    int32   line;
+    usize   length;
 } EntryMeta;
 
 typedef struct {
@@ -123,8 +125,8 @@ typedef struct {
     Datetime   end;
     int32      task_id;
     int32      line;
-    String     annotation; /* TODO(dgl): only load those on demand? */
-    usize      buffer_offset; /* TODO(dgl): replace with EntryMeta  */
+    String     annotation; // TODO(dgl): only load those on demand?
+    usize      buffer_offset; // TODO(dgl): replace with EntryMeta
 } Entry;
 
 typedef struct {
@@ -288,9 +290,10 @@ print_datetime(Mem_Arena *arena, int32 flags, char *fmt, ...) {
         }
 
         va_end(args);
-        // TODO(dgl): @temporary
+
         String result = string_builder_to_string(&builder);
-        printf("%s", string_to_c_str(result));
+        fwrite(result.data, result.length, sizeof(char), stdout);
+        // TODO(dgl): do we need to fflush?
     }
     mem_arena_end_temp(tmp_arena);
 }
@@ -896,6 +899,7 @@ parse_entry_at(Tokenizer *tokenizer, usize offset) {
 // TODO(dgl): make this possible with parse_entry_at. We need to set the tokenizer to a buffer
 // offset. But this offset can be before or after the current position. Maybe the best thing would
 // be storing the buffer address somewhere and do the offset setting based on this address.
+// This is a little tricky because new entries do not have meta data.
 internal Entry
 parse_entry_from_meta(Tokenizer *tokenizer, EntryMeta *meta) {
     tokenizer->input.data = cast(void *, meta->buffer_pos);
@@ -1497,11 +1501,79 @@ commandline_parse(Mem_Arena *arena, Commandline *ctx, char** args, int args_coun
     }
 }
 
-// TODO(dgl): sort entries by start time
-// typedef struct Sort_Entry {
-//     int32 sort_key;
-//     int32 index;
-// } Sort_Entry;
+//
+// Sorting
+//
+
+internal inline void
+sort_swap(Sort_Entry *a, Sort_Entry *b) {
+    Sort_Entry temp = *b;
+    *b = *a;
+    *a = temp;
+}
+
+internal void
+sort_bubble(Sort_Entry *first, int32 entry_count) {
+    //
+    // NOTE(casey): This is the O(n^2) bubble sort
+    //
+    for(uint32 outer = 0; outer < entry_count; ++outer) {
+        bool32 list_is_sorted = true;
+        for(uint32 inner = 0; inner < (entry_count - 1); ++inner) {
+            Sort_Entry *entry_a = first + inner;
+            Sort_Entry *entry_b = entry_a + 1;
+
+            if(entry_a->sort_key > entry_b->sort_key) {
+                sort_swap(entry_a, entry_b);
+                list_is_sorted = false;
+            }
+        }
+
+        if(list_is_sorted) {
+            break;
+        }
+    }
+}
+
+internal void
+sort_radix(Sort_Entry *first, Sort_Entry *temp, int32 entry_count) {
+    Sort_Entry *source = first;
+    Sort_Entry *dest = temp;
+    for(uint32 byte_index = 0;
+        byte_index < 32;
+        byte_index += 8)
+    {
+        uint32 sort_key_offset[256] = {};
+
+        // NOTE(casey): First pass - count how many of each key
+        for(uint32 index = 0; index < entry_count; ++index) {
+            usize radix_value = source[index].sort_key;
+            usize radix_piece = (radix_value >> byte_index) & 0xFF;
+            ++sort_key_offset[radix_piece];
+        }
+
+        // NOTE(casey): Change counts to offsets
+        uint32 total = 0;
+        for(uint32 sort_key_index = 0;
+            sort_key_index < array_count(sort_key_offset);
+            ++sort_key_index) {
+            uint32 count = sort_key_offset[sort_key_index];
+            sort_key_offset[sort_key_index] = total;
+            total += count;
+        }
+
+        // NOTE(casey): Second pass - place elements into the right location
+        for(uint32 index = 0; index < entry_count; ++index) {
+            usize radix_value = source[index].sort_key;
+            usize radix_piece = (radix_value >> byte_index) & 0xFF;
+            dest[sort_key_offset[radix_piece]++] = source[index];
+        }
+
+        Sort_Entry *swap_temp = dest;
+        dest = source;
+        source = swap_temp;
+    }
+}
 
 // TODO(dgl): Help command
 
@@ -1517,12 +1589,12 @@ int main(int argc, char** argv) {
 #else
     void *base_address = 0;
 #endif
-    usize memory_size = megabytes(256);
+    usize memory_size = megabytes(128);
     uint8 *memory_base = cast(uint8 *, mmap(base_address, memory_size, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0));
     Mem_Arena permanent_arena = {};
     Mem_Arena transient_arena = {};
 
-    mem_arena_init(&permanent_arena, memory_base, megabytes(128));
+    mem_arena_init(&permanent_arena, memory_base, megabytes(64));
     mem_arena_init(&transient_arena, memory_base + permanent_arena.size, memory_size - permanent_arena.size);
 
     struct timespec start = get_wall_clock();
@@ -1589,34 +1661,54 @@ int main(int argc, char** argv) {
                 usize to_sentinel = datetime_to_epoch(&cmdline.report.to);
                 LOG_DEBUG("To sentinel %lu", to_sentinel);
 
-                // TODO(dgl): dynamic array
-                EntryMeta *entries = cast(EntryMeta *, malloc(ENTRY_BUFFER_LEN * sizeof(EntryMeta)));
-                int32 entries_count = 0;
+
+                int32 entry_count = 0;
+                int32 max_entry_count = 100;
+                EntryMeta *entries = mem_arena_push_array(&permanent_arena, EntryMeta, max_entry_count);
                 while(!tokenizer.has_error && tokenizer.input.length > 0) {
                     EntryMeta meta = parse_entry_meta(&tokenizer);
                     eat_all_whitespace(&tokenizer);
 
                     if (meta.begin > from_sentinel && meta.begin < to_sentinel) {
-                        assert(entries_count < ENTRY_BUFFER_LEN, "EntryMeta array overflow");
-                        entries[entries_count++] = meta;
+                        if (entry_count == max_entry_count) {
+                            int current_count = max_entry_count;
+                            max_entry_count *= 2;
+                            entries = mem_arena_resize_array(&permanent_arena, EntryMeta, entries, current_count, max_entry_count);
+                        }
+
+                        entries[entry_count++] = meta;
                     }
                 }
 
-                // TODO(dgl): sort
 
+                // NOTE(dgl): use different memory layout if too slow. @performance
+                Sort_Entry *sort_entries = mem_arena_push_array(&permanent_arena, Sort_Entry, entry_count);
+                for (int32 index = 0; index < entry_count; ++index) {
+                    Sort_Entry *sort = sort_entries + index;
+                    EntryMeta *meta = entries + index;
+                    sort->sort_key = meta->begin;
+                    sort->index = index;
+                }
+
+                Mem_Temp_Arena tmp_arena = mem_arena_begin_temp(&transient_arena);
+                {
+                    Sort_Entry *sort_memory = mem_arena_push_array(tmp_arena.arena, Sort_Entry, entry_count);
+                    sort_radix(sort_entries, sort_memory, entry_count);
+                }
+                mem_arena_end_temp(tmp_arena);
 
                 usize total_seconds = 0;
                 usize daily_seconds = 0;
                 int32 last_day = 0;
                 // TODO(dgl): use info from entry array to determine what is printed
                 int32 print_flags = Print_Timezone;
-                for (int32 index = 0; index < entries_count; ++index) {
-                    EntryMeta *meta = entries + index;
+                for (int32 index = 0; index < entry_count; ++index) {
+                    EntryMeta *meta = entries + sort_entries[index].index;
 
                     Entry entry = parse_entry_from_meta(&tokenizer, meta);
 
                     if (report_tag_matches(&cmdline, &entry)) {
-                        if (entry.end.year == 0) entry.end = get_timestamp();
+                        if (entry.end.year == 0) { entry.end = get_timestamp(); }
                         usize end = datetime_to_epoch(&entry.end);
                         assert(meta->begin < end, "End time cannot be larger than begin time");
                         usize difftime = end - meta->begin;
