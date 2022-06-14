@@ -73,7 +73,7 @@ typedef struct {
 } Buffer;
 
 typedef struct Sort_Entry {
-    usize sort_key;
+    uint32 sort_key;
     int32 index;
 } Sort_Entry;
 
@@ -110,7 +110,7 @@ typedef struct {
     int32   line;
 
     bool32  has_error;
-    char   *error_msg;
+    char   error_msg[256];
 } Tokenizer;
 
 typedef struct {
@@ -126,7 +126,7 @@ typedef struct {
     int32      task_id;
     int32      line;
     String     annotation; // TODO(dgl): only load those on demand?
-    usize      buffer_offset; // TODO(dgl): replace with EntryMeta
+    usize      buffer_offset; // TODO(dgl): replace with EntryMeta (currently tricky, because new entries do not have meta data)
 } Entry;
 
 typedef struct {
@@ -293,7 +293,10 @@ print_datetime(Mem_Arena *arena, int32 flags, char *fmt, ...) {
 
         String result = string_builder_to_string(&builder);
         fwrite(result.data, result.length, sizeof(char), stdout);
-        // TODO(dgl): do we need to fflush?
+#if DEBUG
+        fflush(stdout);
+#endif
+
     }
     mem_arena_end_temp(tmp_arena);
 }
@@ -556,7 +559,9 @@ token_error(Tokenizer *tokenizer, char *msg) {
     // because after an error all tokens become invalid.
     if (!tokenizer->has_error) {
         tokenizer->has_error = true;
-        LOG("Parsing error at line %d, column %d: %s", tokenizer->line, tokenizer->column + 1, msg);
+        LOG_DEBUG("Parsing error at line %d, column %d: %s", tokenizer->line, tokenizer->column + 1, msg);
+        // TODO(dgl): can we use the permanent_arena to store this error?
+        stbsp_snprintf(tokenizer->error_msg, array_count(tokenizer->error_msg), "Parsing error at line %d, column %d: %s", tokenizer->line, tokenizer->column + 1, msg);
     }
 }
 
@@ -831,7 +836,7 @@ parse_entry_meta(Tokenizer *tokenizer) {
 
 internal Entry
 parse_entry(Tokenizer *tokenizer) {
-    LOG_DEBUG("Parsing entry from %.*s", DEBUG_TOKENIZER_PREVIEW, tokenizer->input.text);
+    // LOG_DEBUG("Parsing entry from %.*s", DEBUG_TOKENIZER_PREVIEW, tokenizer->input.text);
     Entry result = {};
 
     eat_all_whitespace(tokenizer);
@@ -1505,13 +1510,6 @@ commandline_parse(Mem_Arena *arena, Commandline *ctx, char** args, int args_coun
 // Sorting
 //
 
-internal inline void
-sort_swap(Sort_Entry *a, Sort_Entry *b) {
-    Sort_Entry temp = *b;
-    *b = *a;
-    *a = temp;
-}
-
 internal void
 sort_bubble(Sort_Entry *first, int32 entry_count) {
     //
@@ -1524,7 +1522,9 @@ sort_bubble(Sort_Entry *first, int32 entry_count) {
             Sort_Entry *entry_b = entry_a + 1;
 
             if(entry_a->sort_key > entry_b->sort_key) {
-                sort_swap(entry_a, entry_b);
+                Sort_Entry temp = *entry_b;
+                *entry_b = *entry_a;
+                *entry_a = temp;
                 list_is_sorted = false;
             }
         }
@@ -1539,10 +1539,7 @@ internal void
 sort_radix(Sort_Entry *first, Sort_Entry *temp, int32 entry_count) {
     Sort_Entry *source = first;
     Sort_Entry *dest = temp;
-    for(uint32 byte_index = 0;
-        byte_index < 32;
-        byte_index += 8)
-    {
+    for(uint32 byte_index = 0; byte_index < 32; byte_index += 8) {
         uint32 sort_key_offset[256] = {};
 
         // NOTE(casey): First pass - count how many of each key
@@ -1620,6 +1617,7 @@ int main(int argc, char** argv) {
                 usize last_line_offset = get_last_line_offset(&buffer);
                 Entry last_entry = parse_entry_at(&tokenizer, last_line_offset);
 
+                // TODO(dgl): @cleanup
                 if (!tokenizer.has_error) {
                     if (last_entry.end.year == 0) {
                         LOG("Time interval currently active with annotation: %s", string_to_c_str(last_entry.annotation));
@@ -1627,6 +1625,9 @@ int main(int argc, char** argv) {
                         write_entry_to_buffer(&new_entry, &buffer);
                         write_entire_file(&cmdline.file, &buffer);
                     }
+                } else {
+                    write_entry_to_buffer(&new_entry, &buffer);
+                    write_entire_file(&cmdline.file, &buffer);
                 }
             } break;
             case Command_Type_Stop: {
@@ -1648,6 +1649,8 @@ int main(int argc, char** argv) {
                         write_entry_to_buffer(&last_entry, &buffer);
                         write_entire_file(&cmdline.file, &buffer);
                     }
+                } else {
+                    LOG("Tokenizer error: %s", tokenizer.error_msg);
                 }
             } break;
             case Command_Type_Report: {
@@ -1680,13 +1683,23 @@ int main(int argc, char** argv) {
                     }
                 }
 
+                if (tokenizer.has_error) {
+                    LOG("Tokenizer error: %s", tokenizer.error_msg);
+                }
+
 
                 // NOTE(dgl): use different memory layout if too slow. @performance
                 Sort_Entry *sort_entries = mem_arena_push_array(&permanent_arena, Sort_Entry, entry_count);
                 for (int32 index = 0; index < entry_count; ++index) {
                     Sort_Entry *sort = sort_entries + index;
                     EntryMeta *meta = entries + index;
-                    sort->sort_key = meta->begin;
+
+                    // NOTE(dgl): @performance we could also use an offset of now to be able to use 32bit integers.
+                    // This would decrease the passes on the radix sort. It should be fine with the offset, because
+                    // the seconds of one year do not surpass a 32bit integer
+
+                    assert(from_sentinel < meta->begin, "begin cannot be in the future, for sorting");
+                    sort->sort_key = cast(uint32, meta->begin - from_sentinel);
                     sort->index = index;
                 }
 
@@ -1696,6 +1709,15 @@ int main(int argc, char** argv) {
                     sort_radix(sort_entries, sort_memory, entry_count);
                 }
                 mem_arena_end_temp(tmp_arena);
+
+#if DEBUG
+                 for (int32 index = 0; index < entry_count - 1; ++index) {
+                    Sort_Entry *a = sort_entries + index;
+                    Sort_Entry *b = a + 1;
+
+                    assert(a->sort_key <= b->sort_key, "Array not correctly sorted at index %d - a: %d, b: %d", index, a->sort_key, b->sort_key);
+                }
+#endif
 
                 usize total_seconds = 0;
                 usize daily_seconds = 0;
