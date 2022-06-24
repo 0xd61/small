@@ -43,6 +43,13 @@ Usage:
 #include <x86intrin.h>
 #include <stdarg.h>
 
+#include "helpers/types.h"
+#define STRING_IMPLEMENTATION
+#include "helpers/string.h"
+#define MEMORY_IMPLEMENTATION
+#include "helpers/memory.h"
+
+
 // NOTE(dgl): Disable compiler warnings for stb includes
 #if defined(__clang__)
 #pragma clang diagnostic push
@@ -53,18 +60,13 @@ Usage:
 #pragma clang diagnostic ignored "-Wfloat-conversion"
 #pragma clang diagnostic ignored "-Wimplicit-int-conversion"
 
-#pragma clang diagnostic pop
-#endif
-
-
-#include "helpers/types.h"
-#define STRING_IMPLEMENTATION
-#include "helpers/string.h"
-#define MEMORY_IMPLEMENTATION
-#include "helpers/memory.h"
 
 #define STB_SPRINTF_IMPLEMENTATION
 #include "helpers/stb_sprintf.h"
+
+#pragma clang diagnostic pop
+#endif
+
 
 typedef struct {
     void  *data;
@@ -154,9 +156,6 @@ typedef struct {
     String  annotation;
 } Command_Start;
 
-typedef struct {
-} Command_Stop;
-
 typedef enum {
     Report_Type_Today,
     Report_Type_Week,
@@ -192,7 +191,6 @@ typedef struct {
     int32         window_rows;
     union {
         Command_Start  start;
-        Command_Stop   stop;
         Command_Report report;
         Command_CSV    csv;
     };
@@ -238,9 +236,9 @@ internal void
 print_hours(String_Builder *builder, usize seconds, int32 flags) {
     Datetime time = {};
     time.hour = cast(int32, seconds / 3600);
-    seconds = seconds - (time.hour * 3600);
+    seconds = seconds - (cast(usize, time.hour) * 3600);
     time.minute = cast(int32, seconds / 60);
-    seconds = seconds - (time.minute * 60);
+    seconds = seconds - (cast(usize, time.minute) * 60);
     time.second = cast(int32, seconds);
 
     flags &= ~Print_Timezone;
@@ -332,18 +330,17 @@ usize get_rdtsc(){
 //
 
 internal Buffer
-allocate_filebuffer(File_Stats *file, usize padding) {
+allocate_filebuffer(Mem_Arena *arena, File_Stats *file, usize padding) {
     Buffer result = {};
     if (file->exists) {
         result.data_count = 0;
         result.cap = file->filesize + padding;
 
-#if DEBUG
-        void *base_address = cast(void *, terabytes(2));
-#else
-        void *base_address = 0;
-#endif
-        result.data = mmap(base_address, result.cap, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+        // TODO(dgl): push padding separately
+        LOG_DEBUG("Allocating memory for %lu bytes (filesize with padding)", result.cap);
+
+        // TODO(dgl): reallocate memory on arena overflow
+        result.data = mem_arena_push_array(arena, uint8, result.cap);
     }
 
     return result;
@@ -472,8 +469,12 @@ write_entry_to_buffer(Entry *entry, Buffer *buffer) {
         string_copy(entry->annotation.text, entry->annotation.length, annotation_cache, entry->annotation.length + 1);
         LOG_DEBUG("Annotation cache: %s", annotation_cache);
     }
-    // NOTE(dgl): we set the dest one character behind the new token to ensure there is a newline
-    char *dest = buffer->data + buffer->data_count - 1;
+    char *dest = buffer->data;
+    if (buffer->data_count > 0) {
+        // NOTE(dgl): we set the dest one character behind the new token to ensure there is a newline
+        dest = buffer->data + buffer->data_count - 1;
+    }
+
     LOG_DEBUG("%s", dest);
     memset(dest, 0, len + 1);
     *dest++ = '\n';
@@ -1316,11 +1317,6 @@ commandline_parse_start_cmd(Commandline *ctx, char** args, int args_count) {
     }
 }
 
-internal void
-commandline_parse_stop_cmd(Commandline *ctx, char** args, int args_count) {
-
-}
-
 #if DEBUG
 internal void
 commandline_parse_test_cmd(Commandline *ctx, char** args, int args_count) {
@@ -1444,6 +1440,9 @@ commandline_parse(Mem_Arena *arena, Commandline *ctx, char** args, int args_coun
             } else if (string_compare("sta", arg, 3) == 0) {
                 ctx->command_type = Command_Type_Start;
                 break;
+            } else if (string_compare("con", arg, 3) == 0) {
+                ctx->command_type = Command_Type_Continue;
+                break;
             } else if (string_compare("sto", arg, 3) == 0) {
                 ctx->command_type = Command_Type_Stop;
                 break;
@@ -1476,8 +1475,10 @@ commandline_parse(Mem_Arena *arena, Commandline *ctx, char** args, int args_coun
                 commandline_parse_start_cmd(ctx, args, args_count);
                 PRINT_DEBUG("\tcommand=start\n\ttask_id=%d\n\tannotation=%s\n", ctx->start.task_id, string_to_c_str(ctx->start.annotation));
             } break;
+            case Command_Type_Continue: {
+                PRINT_DEBUG("\tcommand=continue\n");
+            } break;
             case Command_Type_Stop: {
-                commandline_parse_stop_cmd(ctx, args, args_count);
                 PRINT_DEBUG("\tcommand=stop\n");
             } break;
             case Command_Type_Report: {
@@ -1582,7 +1583,7 @@ int main(int argc, char** argv) {
     usize begin_cycles = get_rdtsc();
 
 #if DEBUG
-    void *base_address = cast(void *, terabytes(1));
+    void *base_address = cast(void *, terabytes(2));
 #else
     void *base_address = 0;
 #endif
@@ -1591,8 +1592,9 @@ int main(int argc, char** argv) {
     Mem_Arena permanent_arena = {};
     Mem_Arena transient_arena = {};
 
-    mem_arena_init(&permanent_arena, memory_base, megabytes(64));
-    mem_arena_init(&transient_arena, memory_base + permanent_arena.size, memory_size - permanent_arena.size);
+    // TODO(dgl): optimize memory for large files
+    mem_arena_init(&permanent_arena, memory_base, megabytes(64), "permanent_arena");
+    mem_arena_init(&transient_arena, memory_base + permanent_arena.size, memory_size - permanent_arena.size, "transient_arena");
 
     struct timespec start = get_wall_clock();
     Commandline cmdline = {};
@@ -1607,7 +1609,7 @@ int main(int argc, char** argv) {
                 new_entry.annotation = cmdline.start.annotation;
                 usize entry_len = max_entry_length(new_entry.annotation);
 
-                Buffer buffer = allocate_filebuffer(&cmdline.file, entry_len);
+                Buffer buffer = allocate_filebuffer(&permanent_arena, &cmdline.file, entry_len);
                 read_entire_file(&cmdline.file, &buffer);
 
                 new_entry.buffer_offset = get_end_of_file_offset(&buffer);
@@ -1630,10 +1632,37 @@ int main(int argc, char** argv) {
                     write_entire_file(&cmdline.file, &buffer);
                 }
             } break;
+            case Command_Type_Continue: {
+                usize entry_len = max_entry_length(string_from_c_str("This is a very long entry string but it is only temporary until we dynamically increase the buffer size or use a separate buffer for our entry annotation"));
+                Buffer buffer = allocate_filebuffer(&permanent_arena, &cmdline.file, entry_len);
+                read_entire_file(&cmdline.file, &buffer);
+
+                Tokenizer tokenizer = {};
+                fill_tokenizer(&tokenizer, &buffer);
+                usize last_line_offset = get_last_line_offset(&buffer);
+                Entry last_entry = parse_entry_at(&tokenizer, last_line_offset);
+
+                if (!tokenizer.has_error) {
+                    if (last_entry.end.year == 0) {
+                        LOG("Time interval currently active with annotation: %s", string_to_c_str(last_entry.annotation));
+                    } else {
+                        Entry new_entry = {};
+                        new_entry.begin = get_timestamp();
+                        new_entry.task_id = last_entry.task_id;
+                        new_entry.annotation = last_entry.annotation;
+                        new_entry.buffer_offset = get_end_of_file_offset(&buffer);
+
+                        write_entry_to_buffer(&new_entry, &buffer);
+                        write_entire_file(&cmdline.file, &buffer);
+                    }
+                } else {
+                    LOG("Tokenizer error: %s", tokenizer.error_msg);
+                }
+            } break;
             case Command_Type_Stop: {
                 usize entry_len = max_entry_length(string_from_c_str(""));
 
-                Buffer buffer = allocate_filebuffer(&cmdline.file, entry_len);
+                Buffer buffer = allocate_filebuffer(&permanent_arena, &cmdline.file, entry_len);
                 read_entire_file(&cmdline.file, &buffer);
 
                 Tokenizer tokenizer = {};
@@ -1654,7 +1683,7 @@ int main(int argc, char** argv) {
                 }
             } break;
             case Command_Type_Report: {
-                Buffer buffer = allocate_filebuffer(&cmdline.file, 0);
+                Buffer buffer = allocate_filebuffer(&permanent_arena, &cmdline.file, 0);
                 read_entire_file(&cmdline.file, &buffer);
                 Tokenizer tokenizer = {};
                 fill_tokenizer(&tokenizer, &buffer);
@@ -1667,7 +1696,7 @@ int main(int argc, char** argv) {
 
                 int32 entry_count = 0;
                 int32 max_entry_count = 100;
-                EntryMeta *entries = mem_arena_push_array(&permanent_arena, EntryMeta, max_entry_count);
+                EntryMeta *entries = mem_arena_push_array(&transient_arena, EntryMeta, max_entry_count);
                 while(!tokenizer.has_error && tokenizer.input.length > 0) {
                     EntryMeta meta = parse_entry_meta(&tokenizer);
                     eat_all_whitespace(&tokenizer);
@@ -1676,7 +1705,7 @@ int main(int argc, char** argv) {
                         if (entry_count == max_entry_count) {
                             int current_count = max_entry_count;
                             max_entry_count *= 2;
-                            entries = mem_arena_resize_array(&permanent_arena, EntryMeta, entries, current_count, max_entry_count);
+                            entries = mem_arena_resize_array(&transient_arena, EntryMeta, entries, current_count, max_entry_count);
                         }
 
                         entries[entry_count++] = meta;

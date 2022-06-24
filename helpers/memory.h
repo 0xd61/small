@@ -12,6 +12,7 @@ typedef struct Mem_Arena {
     Mem_Index size;
     Mem_Index curr_offset;
     Mem_Index prev_offset;
+    char *dbg_name;
 } Mem_Arena;
 
 typedef struct Mem_Temp_Arena {
@@ -20,7 +21,7 @@ typedef struct Mem_Temp_Arena {
     Mem_Index prev_offset;
 } Mem_Temp_Arena;
 
-internal void mem_arena_init(Mem_Arena *arena, uint8 *base, Mem_Index size);
+internal void mem_arena_init(Mem_Arena *arena, uint8 *base, Mem_Index size, char *dbg_name);
 #define mem_arena_push_struct(arena, type) (type *)mem_arena_alloc_align(arena, sizeof(type), DEFAULT_ALIGNMENT)
 #define mem_arena_push_array(arena, type, count) (type *)mem_arena_alloc_align(arena, (count)*sizeof(type), DEFAULT_ALIGNMENT)
 #define mem_arena_push(arena, size) mem_arena_alloc_align(arena, size, DEFAULT_ALIGNMENT)
@@ -51,12 +52,13 @@ _align_forward_uintptr(uintptr base, usize align) {
     return(result);
 }
 
-void
-mem_arena_init(Mem_Arena *arena, uint8 *base, Mem_Index size) {
+internal void
+mem_arena_init(Mem_Arena *arena, uint8 *base, Mem_Index size, char *dbg_name) {
     arena->size = size;
     arena->base = base;
     arena->curr_offset = 0;
     arena->prev_offset = 0;
+    arena->dbg_name = dbg_name;
 }
 
 internal void *
@@ -66,12 +68,14 @@ mem_arena_alloc_align(Mem_Arena *arena, Mem_Index size, usize align) {
 
     Mem_Index offset = cast(Mem_Index, new_ptr - cast(uintptr, arena->base)); // revert back to relative offset
 
+    LOG_DEBUG("%s: allocating memory %lu bytes (%lu left)", arena->dbg_name, size, arena->size - (offset+size));
     // TODO(dgl): make a proper memory check here and allocate more memory from the os
     assert((offset + size) <= arena->size, "Arena overflow. Cannot allocate size");
 
     void *result = arena->base + offset;
     arena->prev_offset = offset;
     arena->curr_offset = offset + size;
+
 
     // Zero new memory by default (we do not zero the memory on init or free_all)
     memset(result, 0, size);

@@ -53,13 +53,15 @@ typedef size_t usize;
 #endif
 
 #if DEBUG
-#define LOG(fmt, args...) printf(("%s:%d - " fmt "\n"), __FILE__, __LINE__, ##args)
-#define LOG_DEBUG(fmt, args...) printf(("%s:%d - " fmt "\n"), __FILE__, __LINE__, ##args)
+#define LOG(fmt, args...) fprintf(stderr, ("%s:%d - " fmt "\n"), __FILE__, __LINE__, ##args)
+#define LOG_DEBUG(fmt, args...) fprintf(stderr, ("%s:%d - " fmt "\n"), __FILE__, __LINE__, ##args)
 #define PRINT_DEBUG(fmt, args...) printf((fmt), ##args)
+#define PRINT_ERROR(fmt, args...) fprintf(stderr, (fmt), ##args)
 #else
 #define LOG(fmt, args...) printf((fmt "\n"), ##args)
 #define LOG_DEBUG(fmt, ...)
 #define PRINT_DEBUG(fmt, args...)
+#define PRINT_ERROR(fmt, args...) fprintf(stderr, (fmt), ##args)
 #endif
 
 #define max(a,b) ((a) > (b) ? (a) : (b))
