@@ -379,41 +379,9 @@ read_entire_file(File_Stats *file, Buffer *buffer) {
 
 // NOTE(dgl): offset before last line of file (line containing text)
 // TODO(dgl): replace by tokenizer
-internal usize
-get_last_line_offset(Buffer *buffer) {
-    usize result = 0;
-    char *input = cast(char *, buffer->data);
-    if (input) {
-        char *cursor = input + buffer->data_count;
-        bool32 found_text = false;
-        while (cursor > input &&
-              (*cursor != '\n' || !found_text)) {
-            if (*cursor > ' ') {
-                found_text = true;
-            }
-            cursor--;
-        }
-
-        assert(cursor > cast(char *, buffer->data), "Buffer overflow. Cursor cannot be larger than the data buffer");
-        result = cast(usize, cursor - cast(char *, buffer->data)) + 1; // +1 to go to character after the \n
-
-
-    }
-
-    return result;
-}
-
-// NOTE(dgl): offset before last line of file (line containing text)
 // internal usize
-// get_last_line_offset(Tokenizer *tokenizer) {
+// get_last_line_offset(Buffer *buffer) {
 //     usize result = 0;
-
-//     char *orig_input = tokenizer->input.text;
-//     tokenizer->input.text += tokenizer->input.length;
-
-//     int32 offset = 0;
-//     char cursor =
-//     while(peek_character(tokenizer, offset))
 //     char *input = cast(char *, buffer->data);
 //     if (input) {
 //         char *cursor = input + buffer->data_count;
@@ -434,6 +402,39 @@ get_last_line_offset(Buffer *buffer) {
 
 //     return result;
 // }
+
+// NOTE(dgl): offset before last line of file (line containing text)
+// TODO(dgl): get last line, that not is whitespace or a comment @here
+internal usize
+get_last_line_offset(Tokenizer *tokenizer) {
+    usize result = 0;
+
+    char *orig_input = tokenizer->input.text;
+    tokenizer->input.text += tokenizer->input.length;
+
+    int32 offset = 0;
+    while(result == 0 || abs(offset) < tokenizer->input.length) {
+        char cursor = peek_character(tokenizer, offset);
+        while (cursor != '\n') {
+            offset--;
+        }
+
+        // NOTE(dgl): ignore whitespace at the beginning of the line
+        int32 whitespace_offset = 0;
+        while(is_whitespace(peek_character(tokenizer, offset + whitespace_offset))) {
+            whitespace_offset++
+        }
+
+        if (peek_character(tokenizer, offset + whitespace_offset) == '/' &&
+            peek_character(tokenizer, offset + whitespace_offset + 1) == '/') {
+            offset--
+        } else {
+            result = tokenizer->input.length - offset;
+        }
+    }
+
+    return result;
+}
 
 // NOTE(dgl): offset after last text character of last line of file
 internal usize
@@ -627,6 +628,7 @@ peek_next_character(Tokenizer *tokenizer) {
     return result;
 }
 
+// NOTE(dgl): only checks for spaces and tabs
 internal inline bool32
 is_whitespace(char c) {
     bool32 result = false;
@@ -638,6 +640,7 @@ is_whitespace(char c) {
     return result;
 }
 
+// NOTE(dgl): eats all whitespace newlines and comments
 internal inline void
 eat_all_whitespace(Tokenizer *tokenizer) {
     char c = peek_next_character(tokenizer);
