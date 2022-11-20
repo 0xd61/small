@@ -11,8 +11,6 @@ Example:
 2022-03-08T01:38:00+00:00 | 2022-03-08T01:38:00+00:00 | taskID (-1 if no task specified) | other annotations
 
 TODO(dgl):
-    - Memory Management
-    - Better commandline errors (currently we get segfaults)
     - Better printing (log vs output)
     - Parsing error on start when last line was a comment
 
@@ -68,12 +66,6 @@ Usage:
 #endif
 
 
-typedef struct {
-    void  *data;
-    usize  data_count;
-    usize  cap;
-} Buffer;
-
 typedef struct Sort_Entry {
     uint32 sort_key;
     int32 index;
@@ -127,8 +119,7 @@ typedef struct {
     Datetime   end;
     int32      task_id;
     int32      line;
-    String     annotation; // TODO(dgl): only load those on demand?
-    usize      buffer_offset; // TODO(dgl): replace with EntryMeta (currently tricky, because new entries do not have meta data)
+    String     annotation;
 } Entry;
 
 typedef struct {
@@ -405,10 +396,44 @@ get_last_line_offset(Buffer *buffer) {
 
         assert(cursor > cast(char *, buffer->data), "Buffer overflow. Cursor cannot be larger than the data buffer");
         result = cast(usize, cursor - cast(char *, buffer->data)) + 1; // +1 to go to character after the \n
+
+
     }
 
     return result;
 }
+
+// NOTE(dgl): offset before last line of file (line containing text)
+// internal usize
+// get_last_line_offset(Tokenizer *tokenizer) {
+//     usize result = 0;
+
+//     char *orig_input = tokenizer->input.text;
+//     tokenizer->input.text += tokenizer->input.length;
+
+//     int32 offset = 0;
+//     char cursor =
+//     while(peek_character(tokenizer, offset))
+//     char *input = cast(char *, buffer->data);
+//     if (input) {
+//         char *cursor = input + buffer->data_count;
+//         bool32 found_text = false;
+//         while (cursor > input &&
+//               (*cursor != '\n' || !found_text)) {
+//             if (*cursor > ' ') {
+//                 found_text = true;
+//             }
+//             cursor--;
+//         }
+
+//         assert(cursor > cast(char *, buffer->data), "Buffer overflow. Cursor cannot be larger than the data buffer");
+//         result = cast(usize, cursor - cast(char *, buffer->data)) + 1; // +1 to go to character after the \n
+
+
+//     }
+
+//     return result;
+// }
 
 // NOTE(dgl): offset after last text character of last line of file
 internal usize
@@ -421,7 +446,6 @@ get_end_of_file_offset(Buffer *buffer) {
               (*cursor <= ' ')) {
             cursor--;
         }
-        ++cursor; // TODO(dgl): is there a better way for this loop? We go back one character too much...
 
         assert(cursor > cast(char *, buffer->data), "Buffer overflow. Cursor cannot be larger than the data buffer");
         result = cast(usize, cursor - cast(char *, buffer->data)) + 1; // +1 to go one byte after last text character
@@ -430,8 +454,9 @@ get_end_of_file_offset(Buffer *buffer) {
     return result;
 }
 
+// NOTE(dgl): appends the different buffers.
 internal void
-write_entire_file(File_Stats *file, Buffer *buffer) {
+write_entire_file(File_Stats *file, int buffer_count, ...) {
     char tmp_filename[MAX_FILENAME_SIZE];
     assert(file->filename.length + 2 < MAX_FILENAME_SIZE, "Filename too long. Increase MAX_FILENAME_SIZE.");
     string_copy(file->filename.text, file->filename.length, tmp_filename, MAX_FILENAME_SIZE);
@@ -441,13 +466,20 @@ write_entire_file(File_Stats *file, Buffer *buffer) {
 
     int fd = open(tmp_filename, O_WRONLY | O_CREAT, 0644);
     if (fd) {
-        ssize_t res = write(fd, buffer->data, buffer->data_count);
+        va_list buffers;
+        va_start(buffers, buffer_count);
 
-        if (res < 0) {
-            LOG("Failed writing to file %s with error: %d", tmp_filename, errno);
-        } else {
-            LOG_DEBUG("Written %ld bytes of %ld bytes to %s", res, buffer->data_count, tmp_filename);
+        for (int index = 0; index < buffer_count; ++index) {
+            Buffer *buffer = va_arg(buffers, Buffer *);
+            ssize_t res = write(fd, buffer->data, buffer->data_count);
+            if (res < 0) {
+                LOG("Failed writing to file %s with error: %d", tmp_filename, errno);
+            } else {
+                LOG_DEBUG("Written %ld bytes of %ld bytes to %s", res, buffer->data_count, tmp_filename);
+            }
         }
+
+        va_end(buffers);
     }
     close(fd);
 
@@ -456,31 +488,11 @@ write_entire_file(File_Stats *file, Buffer *buffer) {
     }
 }
 
-internal void
-write_entry_to_buffer(Entry *entry, Buffer *buffer) {
-    usize len = max_entry_length(entry->annotation);
-    assert(entry->buffer_offset + len <= buffer->cap, "Buffer overflow. Please increase the buffer size before writing the entry");
-    buffer->data_count = entry->buffer_offset;
-
-    // NOTE(dgl): we overwrite the buffer data, which is set in the annotation. We need to cache this annotation line before memset...
-    char *annotation_cache = 0;
-    if (entry->annotation.data) {
-        annotation_cache = cast(char *, malloc(entry->annotation.length + 1));
-        string_copy(entry->annotation.text, entry->annotation.length, annotation_cache, entry->annotation.length + 1);
-        LOG_DEBUG("Annotation cache: %s", annotation_cache);
-    }
-    char *dest = buffer->data;
-    if (buffer->data_count > 0) {
-        // NOTE(dgl): we set the dest one character behind the new token to ensure there is a newline
-        dest = buffer->data + buffer->data_count - 1;
-    }
-
-    LOG_DEBUG("%s", dest);
-    memset(dest, 0, len + 1);
-    *dest++ = '\n';
-
-    // TODO(dgl): use string builder
-    int printed = stbsp_sprintf(dest, "%04d-%02d-%02dT%02d:%02d:%02d%c%02d:%02d:%02d | ",
+internal Buffer
+entry_to_buffer(Mem_Arena *arena, Entry *entry) {
+    String_Builder builder = string_builder_init(arena, sizeof(char) * 80);
+    string_append(&builder, "\n");
+    string_append(&builder, "%04d-%02d-%02dT%02d:%02d:%02d%c%02d:%02d:%02d | ",
                            entry->begin.year,
                            entry->begin.month,
                            entry->begin.day,
@@ -491,43 +503,57 @@ write_entry_to_buffer(Entry *entry, Buffer *buffer) {
                            entry->begin.offset_hour,
                            entry->begin.offset_minute,
                            entry->begin.offset_second);
-    dest += printed;
-    buffer->data_count += printed;
+
     if (entry->end.year > 0) {
-        printed = stbsp_sprintf(dest, "%04d-%02d-%02dT%02d:%02d:%02d%c%02d:%02d:%02d | ",
-                           entry->end.year,
-                           entry->end.month,
-                           entry->end.day,
-                           entry->end.hour,
-                           entry->end.minute,
-                           entry->end.second,
-                           entry->end.offset_sign ? '-' : '+',
-                           entry->end.offset_hour,
-                           entry->end.offset_minute,
-                           entry->end.offset_second);
-       dest += printed;
-       buffer->data_count += printed;
-   } else {
-       printed = stbsp_sprintf(dest, " | ");
-       dest += printed;
-       buffer->data_count += printed;
-   }
-
-    printed = stbsp_sprintf(dest, "%d | ", entry->task_id);
-    dest += printed;
-    buffer->data_count += printed;
-
-    if (entry->annotation.data) {
-        printed = stbsp_sprintf(dest, "%s\n", annotation_cache);
-        dest += printed;
-        buffer->data_count += printed;
+        string_append(&builder, "%04d-%02d-%02dT%02d:%02d:%02d%c%02d:%02d:%02d | ",
+                               entry->end.year,
+                               entry->end.month,
+                               entry->end.day,
+                               entry->end.hour,
+                               entry->end.minute,
+                               entry->end.second,
+                               entry->end.offset_sign ? '-' : '+',
+                               entry->end.offset_hour,
+                               entry->end.offset_minute,
+                               entry->end.offset_second);
     } else {
-        printed = stbsp_sprintf(dest, "\n");
-        dest += printed;
-        buffer->data_count += printed;
+        string_append(&builder, " | ");
     }
 
-    assert(buffer->data_count <= buffer->cap, "Buffer overflow");
+    string_append(&builder, "%d | ", entry->task_id);
+
+    if (entry->annotation.data) {
+        string_append(&builder, "%s\n", string_to_c_str(entry->annotation));
+    } else {
+        string_append(&builder, "\n");
+    }
+
+    String string = string_builder_to_string(&builder);
+    Buffer result = string_to_buffer(&string);
+
+    return (result);
+}
+
+// NOTE(dgl): Returns 0 if the complete buffer b was merged into buffer a.
+// It buffer b is larger than a, we return the number of the missing bytes.
+internal usize
+buffer_merge_at(Buffer *a, Buffer *b, usize pos) {
+    assert(pos < a->cap, "Position outside of buffer");
+    usize bytes_to_write = b->data_count;
+
+    if (a->cap - pos < bytes_to_write) {
+        bytes_to_write = cast(usize, a->cap - pos - 1);
+    }
+
+    assert(b->data_count >= bytes_to_write, "Cannot write more bytes than available");
+
+    usize missing_bytes = b->data_count - bytes_to_write;
+    string_copy(b->data, bytes_to_write, a->data + pos, a->cap - pos);
+    a->data_count = pos + bytes_to_write;
+
+    LOG_DEBUG("Buffer does not have enough space. We will only merge partially - left %lu, required %lu, missing %lu", a->cap - pos, b->data_count, missing_bytes);
+
+    return missing_bytes;
 }
 
 //
@@ -581,11 +607,12 @@ eat_next_character(Tokenizer *tokenizer) {
     }
 }
 
+// NOTE(dgl): negative lookahead is possible but be careful!
 internal inline char
-peek_character(Tokenizer *tokenizer, uint32 lookahead) {
+peek_character(Tokenizer *tokenizer, int32 lookahead) {
     char result = 0;
     if (!tokenizer->has_error && tokenizer->input.length > 0) {
-        assert(lookahead < tokenizer->input.length, "Lookahead cannot be larger than input");
+        assert(abs(lookahead) < tokenizer->input.length, "Lookahead cannot be larger than input");
         result = *(tokenizer->input.text + lookahead);
     }
 
@@ -615,7 +642,7 @@ internal inline void
 eat_all_whitespace(Tokenizer *tokenizer) {
     char c = peek_next_character(tokenizer);
 
-    while(is_whitespace(c) || c == '/') {
+    while(is_whitespace(c) || c == '/' || c == '\n') {
         if (c == '/') {
             char next_c = peek_character(tokenizer, 1);
             if (next_c == '/') {
@@ -625,6 +652,12 @@ eat_all_whitespace(Tokenizer *tokenizer) {
             } else {
                 return;
             }
+        } else if (c == '\n') {
+            char next_c = peek_character(tokenizer, 1);
+            while(peek_next_character(tokenizer) == '\n') {
+                eat_next_character(tokenizer);
+            }
+            return;
         }
 
         eat_next_character(tokenizer);
@@ -898,7 +931,6 @@ internal Entry
 parse_entry_at(Tokenizer *tokenizer, usize offset) {
     set_tokenizer(tokenizer, offset);
     Entry result = parse_entry(tokenizer);
-    result.buffer_offset = offset;
     return result;
 }
 
@@ -936,7 +968,7 @@ max_entry_length(String annotation) {
 //
 
 internal Datetime
-get_timezone_offset() {
+get_timezone_offset(Mem_Arena *arena) {
     void tzset(void);
     extern char *tzname[2];
     extern int daylight;
@@ -952,7 +984,7 @@ get_timezone_offset() {
 
     if (string_compare("UTC", tz, 3) != 0) {
         Tokenizer tokenizer = {};
-        tokenizer.input = string_from_c_str(tz);
+        tokenizer.input = string_from_c_str(arena, tz);
         result = parse_timezone(&tokenizer);
     }
 
@@ -960,12 +992,12 @@ get_timezone_offset() {
 }
 
 internal Datetime
-get_timestamp() {
+get_timestamp(Mem_Arena *arena) {
     Datetime result = {};
 
     time_t epoch = time(NULL);
     struct tm local = *localtime(&epoch);
-    Datetime tz = get_timezone_offset();
+    Datetime tz = get_timezone_offset(arena);
 
     result.second = local.tm_sec;
     result.minute = local.tm_min;
@@ -1313,7 +1345,7 @@ commandline_parse_start_cmd(Commandline *ctx, char** args, int args_count) {
 
         ctx->start.annotation.text[required_memory] = 0;
     } else {
-        ctx->start.annotation = string_from_c_str("");
+        ctx->start.annotation = string_from_c_str(ctx->arena, "");
     }
 }
 
@@ -1376,7 +1408,7 @@ commandline_parse_report_cmd(Commandline *ctx, char** args, int args_count) {
         }
     }
 
-    Datetime now = get_timestamp();
+    Datetime now = get_timestamp(ctx->arena);
     if (ctx->report.type == Report_Type_Custom) {
         // NOTE(dgl): currently not supported
     } else {
@@ -1404,8 +1436,8 @@ commandline_parse(Mem_Arena *arena, Commandline *ctx, char** args, int args_coun
     ctx->arena = arena;
     ctx->is_valid = true;
 
-    File_Stats home = get_file_stats(string_from_c_str("~/time.txt"));
-    File_Stats local = get_file_stats(string_from_c_str("./time.txt"));
+    File_Stats home = get_file_stats(string_from_c_str(arena, "~/time.txt"));
+    File_Stats local = get_file_stats(string_from_c_str(arena, "./time.txt"));
     ctx->file = local;
     if (!ctx->file.exists) {
         ctx->file = home;
@@ -1431,7 +1463,7 @@ commandline_parse(Mem_Arena *arena, Commandline *ctx, char** args, int args_coun
             if (string_compare("-f", arg, 2) == 0) {
                 if (cursor < args_count) {
                     char *filename = args[cursor++];
-                    ctx->file = get_file_stats(string_from_c_str(filename));
+                    ctx->file = get_file_stats(string_from_c_str(arena, filename));
                     // TODO(dgl): if a file flag was provided and the file
                     // does not exist, we should create it.
                 } else {
@@ -1604,37 +1636,46 @@ int main(int argc, char** argv) {
         switch(cmdline.command_type) {
             case Command_Type_Start: {
                 Entry new_entry = {};
-                new_entry.begin = get_timestamp();
+                new_entry.begin = get_timestamp(&transient_arena);
                 new_entry.task_id = cmdline.start.task_id;
                 new_entry.annotation = cmdline.start.annotation;
-                usize entry_len = max_entry_length(new_entry.annotation);
 
-                Buffer buffer = allocate_filebuffer(&permanent_arena, &cmdline.file, entry_len);
+                Buffer buffer = allocate_filebuffer(&permanent_arena, &cmdline.file, 0);
                 read_entire_file(&cmdline.file, &buffer);
-
-                new_entry.buffer_offset = get_end_of_file_offset(&buffer);
 
                 Tokenizer tokenizer = {};
                 fill_tokenizer(&tokenizer, &buffer);
+
+                // NOTE(dgl): check if last line was a comment or whitespace and get a new last line
+                // offset
                 usize last_line_offset = get_last_line_offset(&buffer);
+                set_tokenizer(&tokenizer, last_line_offset);
+                eat_all_whitespace(&tokenizer);
+                if (tokenizer.input.length == 0) {
+
+                }
+
+
                 Entry last_entry = parse_entry_at(&tokenizer, last_line_offset);
+
+                // NOTE(dgl): cleanup buffer end
+                buffer.data_count = get_end_of_file_offset(&buffer);
 
                 // TODO(dgl): @cleanup
                 if (!tokenizer.has_error) {
                     if (last_entry.end.year == 0) {
                         LOG("Time interval currently active with annotation: %s", string_to_c_str(last_entry.annotation));
                     } else {
-                        write_entry_to_buffer(&new_entry, &buffer);
-                        write_entire_file(&cmdline.file, &buffer);
+                        Buffer entry_buffer = entry_to_buffer(&transient_arena, &new_entry);
+                        write_entire_file(&cmdline.file, 2, &buffer, &entry_buffer);
                     }
                 } else {
-                    write_entry_to_buffer(&new_entry, &buffer);
-                    write_entire_file(&cmdline.file, &buffer);
+                    Buffer entry_buffer = entry_to_buffer(&transient_arena, &new_entry);
+                    write_entire_file(&cmdline.file, 2, &buffer, &entry_buffer);
                 }
             } break;
             case Command_Type_Continue: {
-                usize entry_len = max_entry_length(string_from_c_str("This is a very long entry string but it is only temporary until we dynamically increase the buffer size or use a separate buffer for our entry annotation"));
-                Buffer buffer = allocate_filebuffer(&permanent_arena, &cmdline.file, entry_len);
+                Buffer buffer = allocate_filebuffer(&permanent_arena, &cmdline.file, 0);
                 read_entire_file(&cmdline.file, &buffer);
 
                 Tokenizer tokenizer = {};
@@ -1647,22 +1688,22 @@ int main(int argc, char** argv) {
                         LOG("Time interval currently active with annotation: %s", string_to_c_str(last_entry.annotation));
                     } else {
                         Entry new_entry = {};
-                        new_entry.begin = get_timestamp();
+                        new_entry.begin = get_timestamp(&transient_arena);
                         new_entry.task_id = last_entry.task_id;
                         new_entry.annotation = last_entry.annotation;
-                        new_entry.buffer_offset = get_end_of_file_offset(&buffer);
 
-                        write_entry_to_buffer(&new_entry, &buffer);
-                        write_entire_file(&cmdline.file, &buffer);
+                        // NOTE(dgl): cleanup buffer end
+                        buffer.data_count = get_end_of_file_offset(&buffer);;
+
+                        Buffer entry_buffer = entry_to_buffer(&transient_arena, &new_entry);
+                        write_entire_file(&cmdline.file, 2, &buffer, &entry_buffer);
                     }
                 } else {
                     LOG("Tokenizer error: %s", tokenizer.error_msg);
                 }
             } break;
             case Command_Type_Stop: {
-                usize entry_len = max_entry_length(string_from_c_str(""));
-
-                Buffer buffer = allocate_filebuffer(&permanent_arena, &cmdline.file, entry_len);
+                Buffer buffer = allocate_filebuffer(&permanent_arena, &cmdline.file, 0);
                 read_entire_file(&cmdline.file, &buffer);
 
                 Tokenizer tokenizer = {};
@@ -1674,9 +1715,27 @@ int main(int argc, char** argv) {
                     if (last_entry.end.year != 0) {
                         LOG("No time interval active");
                     } else {
-                        last_entry.end = get_timestamp();
-                        write_entry_to_buffer(&last_entry, &buffer);
-                        write_entire_file(&cmdline.file, &buffer);
+                        last_entry.end = get_timestamp(&transient_arena);
+                        Buffer entry_buffer = entry_to_buffer(&transient_arena, &last_entry);
+                        // NOTE(dgl): the last entry starts at the newline but to write the entry we must start one byte before.
+                        // However what if we
+                        if (*(cast(char *, buffer.data) + last_line_offset - 1) == '\n') {
+                            last_line_offset--;
+                        }
+
+                        // NOTE(dgl): we try to overwrite the last entry in our buffer with the updated info.
+                        // if the space in our buffer is too small we write the data that fits and
+                        // set an offset in our entry_buffer so that we append only the missing bytes
+                        // to the file.
+                        usize missing_bytes = buffer_merge_at(&buffer, &entry_buffer, last_line_offset);
+                        if (missing_bytes > 0) {
+                            usize written = entry_buffer.data_count - missing_bytes;
+                            entry_buffer.data += written;
+                            entry_buffer.data_count -= written;
+                            write_entire_file(&cmdline.file, 2, &buffer, &entry_buffer);
+                        } else {
+                            write_entire_file(&cmdline.file, 1, &buffer);
+                        }
                     }
                 } else {
                     LOG("Tokenizer error: %s", tokenizer.error_msg);
@@ -1759,7 +1818,7 @@ int main(int argc, char** argv) {
                     Entry entry = parse_entry_from_meta(&tokenizer, meta);
 
                     if (report_tag_matches(&cmdline, &entry)) {
-                        if (entry.end.year == 0) { entry.end = get_timestamp(); }
+                        if (entry.end.year == 0) { entry.end = get_timestamp(&transient_arena); }
                         usize end = datetime_to_epoch(&entry.end);
                         assert(meta->begin < end, "End time cannot be larger than begin time");
                         usize difftime = end - meta->begin;
@@ -1786,14 +1845,14 @@ int main(int argc, char** argv) {
                 print_datetime(&transient_arena, print_flags, "Total hours: %th hs\n", total_seconds);
             } break;
             case Command_Type_CSV: {
-
+                LOG("Not yet implemented");
             } break;
     #if DEBUG
             case Command_Type_Generate: {
-
+                LOG("Not yet implemented");
             } break;
             case Command_Type_Test: {
-                String annotation = string_from_c_str("das ist ein test mit @test @test2 und @foobar");
+                String annotation = string_from_c_str(&transient_arena, "das ist ein test mit @test @test2 und @foobar");
                 Entry entry = {};
                 entry.annotation = annotation;
 

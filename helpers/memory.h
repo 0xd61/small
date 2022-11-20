@@ -100,12 +100,15 @@ mem_arena_resize_align(Mem_Arena *arena, uint8 *current_base, Mem_Index current_
             memset(arena->base + arena->prev_offset + current_size, 0, new_size - current_size);
         }
         result = current_base;
+        LOG_DEBUG("%s: re-allocating memory from %lu to %lu bytes (%lu left)", arena->dbg_name, current_size, new_size, arena->size - arena->curr_offset);
+
     } else {
         void *new_base = mem_arena_alloc_align(arena, new_size, align);
         // NOTE(dgl): copy the existing data to the new location
         usize copy_size = new_size < current_size ? new_size : current_size;
         memcpy(new_base, current_base, copy_size);
         result = new_base;
+        LOG_DEBUG("%s: re-allocating memory with data copy to new location from %lu to %lu bytes (%lu left)", arena->dbg_name, current_size, new_size, arena->size - arena->curr_offset);
     }
 
     return(result);

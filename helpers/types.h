@@ -34,6 +34,12 @@ typedef uintptr_t uintptr;
 #include <stddef.h>
 typedef size_t usize;
 
+typedef struct {
+    void  *data;
+    usize  data_count;
+    usize  cap;
+} Buffer;
+
 //
 // Defines
 //
