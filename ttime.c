@@ -11,14 +11,15 @@ Example:
 2022-03-08T01:38:00+00:00 | 2022-03-08T01:38:00+00:00 | taskID (-1 if no task specified) | other annotations
 
 TODO(dgl):
+    - Parsing error on start and cont when last line was a comment
+    - Parsing error in report, when last line was empty
     - Better printing (log vs output)
-    - Parsing error on start when last line was a comment
 
 Usage:
     ttime <flags> [command] [command args]
 
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
-#define DEBUG 1
+#define DEBUG 0
 #define DEBUG_TOKENIZER_PREVIEW 20
 #define MAX_FILENAME_SIZE 4096
 // NOTE(dgl): used to calculate about how much memory we have to allocate for our
@@ -375,65 +376,6 @@ read_entire_file(File_Stats *file, Buffer *buffer) {
     } else {
         LOG("Could not open file: %s", string_to_c_str(file->filename));
     }
-}
-
-// NOTE(dgl): offset before last line of file (line containing text)
-// TODO(dgl): replace by tokenizer
-// internal usize
-// get_last_line_offset(Buffer *buffer) {
-//     usize result = 0;
-//     char *input = cast(char *, buffer->data);
-//     if (input) {
-//         char *cursor = input + buffer->data_count;
-//         bool32 found_text = false;
-//         while (cursor > input &&
-//               (*cursor != '\n' || !found_text)) {
-//             if (*cursor > ' ') {
-//                 found_text = true;
-//             }
-//             cursor--;
-//         }
-
-//         assert(cursor > cast(char *, buffer->data), "Buffer overflow. Cursor cannot be larger than the data buffer");
-//         result = cast(usize, cursor - cast(char *, buffer->data)) + 1; // +1 to go to character after the \n
-
-
-//     }
-
-//     return result;
-// }
-
-// NOTE(dgl): offset before last line of file (line containing text)
-// TODO(dgl): get last line, that not is whitespace or a comment @here
-internal usize
-get_last_line_offset(Tokenizer *tokenizer) {
-    usize result = 0;
-
-    char *orig_input = tokenizer->input.text;
-    tokenizer->input.text += tokenizer->input.length;
-
-    int32 offset = 0;
-    while(result == 0 || abs(offset) < tokenizer->input.length) {
-        char cursor = peek_character(tokenizer, offset);
-        while (cursor != '\n') {
-            offset--;
-        }
-
-        // NOTE(dgl): ignore whitespace at the beginning of the line
-        int32 whitespace_offset = 0;
-        while(is_whitespace(peek_character(tokenizer, offset + whitespace_offset))) {
-            whitespace_offset++
-        }
-
-        if (peek_character(tokenizer, offset + whitespace_offset) == '/' &&
-            peek_character(tokenizer, offset + whitespace_offset + 1) == '/') {
-            offset--
-        } else {
-            result = tokenizer->input.length - offset;
-        }
-    }
-
-    return result;
 }
 
 // NOTE(dgl): offset after last text character of last line of file
@@ -964,6 +906,65 @@ max_entry_length(String annotation) {
 
     return result + 1;  // +1 because of \n
 }
+
+// NOTE(dgl): offset before last line of file (line containing text)
+// TODO(dgl): replace by tokenizer
+internal usize
+get_last_line_offset(Buffer *buffer) {
+    usize result = 0;
+    char *input = cast(char *, buffer->data);
+    if (input) {
+        char *cursor = input + buffer->data_count;
+        bool32 found_text = false;
+        while (cursor > input &&
+              (*cursor != '\n' || !found_text)) {
+            if (*cursor > ' ') {
+                found_text = true;
+            }
+            cursor--;
+        }
+
+        assert(cursor > cast(char *, buffer->data), "Buffer overflow. Cursor cannot be larger than the data buffer");
+        result = cast(usize, cursor - cast(char *, buffer->data)) + 1; // +1 to go to character after the \n
+
+
+    }
+
+    return result;
+}
+
+// NOTE(dgl): offset before last line of file (line containing text)
+// TODO(dgl): get last line, that not is whitespace or a comment @here
+// internal usize
+// get_last_line_offset(Tokenizer *tokenizer) {
+//     usize result = 0;
+
+//     char *orig_input = tokenizer->input.text;
+//     tokenizer->input.text += tokenizer->input.length;
+
+//     int32 offset = 0;
+//     while(result == 0 && abs(offset) < tokenizer->input.length) {
+//         char cursor = peek_character(tokenizer, offset);
+//         while (cursor != '\n') {
+//             cursor = peek_character(tokenizer, --offset);
+//         }
+
+//         // NOTE(dgl): ignore whitespace at the beginning of the line
+//         int32 whitespace_offset = 1;
+//         while(is_whitespace(peek_character(tokenizer, offset + whitespace_offset))) {
+//             whitespace_offset++;
+//         }
+
+//         if (peek_character(tokenizer, offset + whitespace_offset) == '/' &&
+//             peek_character(tokenizer, offset + whitespace_offset + 1) == '/') {
+//             offset--;
+//         } else {
+//             result = tokenizer->input.length - offset;
+//         }
+//     }
+
+//     return result;
+// }
 
 //
 // Time/Datetime
