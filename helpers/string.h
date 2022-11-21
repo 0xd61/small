@@ -19,7 +19,7 @@ typedef struct String_Builder {
     String string;
 } String_Builder;
 
-internal String string_from_c_str(Mem_Arena *arena, char *s);
+internal String string_from_c_str(char *s);
 internal void string_copy(char *src, size_t src_count, char *dest, size_t dest_count);
 internal void string_concat(char *src_a, size_t src_a_count, char *src_b, size_t src_b_count, char *dest, size_t dest_count);
 internal int32 string_compare(char *string_a, char *string_b, size_t string_count);
@@ -31,19 +31,28 @@ internal String string_builder_to_string(String_Builder *builder);
 
 internal inline usize
 string_length(char *string) {
+    char *begin = string;
     usize count = 0;
     while(*string++) {
         count++;
     }
 
+    count -= 1;
+
+    // NOTE(dgl): should return one char before nullbyte
+    assert(begin[count + 1] == '\0', "Not a valid cstring");
     return count;
 }
 
 internal inline char *
-string_to_c_str(String s) {
+string_to_c_str(Mem_Arena *arena, String s) {
     assert(s.text != 0, "String text is not defined");
-    s.text[s.cap] = 0; // TODO(dgl): can't do that with static strings... Need a fix there. How do we check if this is on stack or on heap?
-    return s.text;
+
+    char *text = mem_arena_push_array(arena, char, s.length + 1);
+    string_copy(s.text, s.length, text, s.length + 1);
+    text[s.length + 1] = 0;
+
+    return text;
 }
 
 #endif // STRING_H_INCLUDE
@@ -58,18 +67,20 @@ string_copy(char *src, size_t src_count, char *dest, size_t dest_count) {
     for(int index = 0; index < src_count; ++index) {
         *dest++ = *src++;
     }
+    // TODO(dgl): is this necessary?
+    // This should only be done when using cstrings. We should replace the string copy parameter
+    // by strings and create a mem_copy function for everything else.
     *dest = '\0';
 }
 
 internal String
-string_from_c_str(Mem_Arena *arena, char *s) {
+string_from_c_str(char *s) {
     String result = {};
     result.length = string_length(s);
     result.cap = result.length + 1;
-    result.text = mem_arena_push_array(arena, char, result.cap);
+    result.text = s;
 
-    string_copy(s, result.length, result.text, result.cap);
-    result.text[result.cap] = '\0';
+    assert(result.text[result.cap] == '\0', "Not a valid cstring");
 
     return result;
 }
