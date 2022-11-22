@@ -193,7 +193,6 @@ typedef enum {
 //
 //
 //
-internal usize max_entry_length(String annotation);
 
 //
 // Printing
@@ -889,46 +888,6 @@ parse_entry_from_meta(Tokenizer *tokenizer, EntryMeta *meta) {
     Entry result = parse_entry(tokenizer);
     return result;
 }
-
-internal usize
-max_entry_length(String annotation) {
-    // example: 2022-03-08T01:38:00:00+00:00:00 | 2022-03-08T01:38:00:00+00:00:00 | taskID (-1 if no task specified) | other annotations
-    usize result = 0;
-    usize max_datetime_len = string_length("2022-03-08T01:38:00:00+00:00:00");
-    usize max_task_id_len = string_length("-2147483648");
-    usize max_annotation_len = annotation.length;
-
-    usize max_divider_len = string_length(" | ");
-    result = max_datetime_len + max_divider_len + max_datetime_len + max_divider_len + max_task_id_len + max_divider_len + max_annotation_len;
-
-    return result + 1;  // +1 because of \n
-}
-
-// NOTE(dgl): offset before last line of file (line containing text)
-// TODO(dgl): replace by tokenizer
-// internal usize
-// get_last_line_offset(Buffer *buffer) {
-//     usize result = 0;
-//     char *input = cast(char *, buffer->data);
-//     if (input) {
-//         char *cursor = input + buffer->data_count;
-//         bool32 found_text = false;
-//         while (cursor > input &&
-//               (*cursor != '\n' || !found_text)) {
-//             if (*cursor > ' ') {
-//                 found_text = true;
-//             }
-//             cursor--;
-//         }
-
-//         assert(cursor > cast(char *, buffer->data), "Buffer overflow. Cursor cannot be larger than the data buffer");
-//         result = cast(usize, cursor - cast(char *, buffer->data)) + 1; // +1 to go to character after the \n
-
-
-//     }
-
-//     return result;
-// }
 
 // NOTE(dgl): offset before last line of file (line containing text)
 internal usize
