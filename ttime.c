@@ -11,6 +11,7 @@ Example:
 2022-03-08T01:38:00+00:00 | 2022-03-08T01:38:00+00:00 | taskID (-1 if no task specified) | other annotations
 
 TODO(dgl):
+    - report error when last line empty
     - Better printing (log vs output)
 
 Usage:
@@ -550,11 +551,9 @@ eat_next_character(Tokenizer *tokenizer) {
 internal inline char
 peek_character(Tokenizer *tokenizer, int32 lookahead) {
     char result = 0;
-    if (!tokenizer->has_error && tokenizer->input.length > 0) {
-        assert(abs(lookahead) < tokenizer->input.length, "Lookahead cannot be larger than input");
+    if (!tokenizer->has_error && tokenizer->input.length > abs(lookahead)) {
         result = *(tokenizer->input.text + lookahead);
     }
-
     // LOG_DEBUG("Peeked character %c (%d) - Buffered: %.*s", result, result, DEBUG_TOKENIZER_PREVIEW, tokenizer->input.text);
 
     return result;
