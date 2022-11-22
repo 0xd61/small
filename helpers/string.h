@@ -40,7 +40,7 @@ string_length(char *string) {
     count -= 1;
 
     // NOTE(dgl): should return one char before nullbyte
-    assert(begin[count + 1] == '\0', "Not a valid cstring");
+    assert(begin[count] != '\0' && begin[count + 1] == '\0', "Not a valid cstring");
     return count;
 }
 
