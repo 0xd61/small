@@ -12,6 +12,7 @@ Example:
 
 TODO(dgl):
     - Better printing (log vs output)
+    - Add one newline too much on start/cont after a comment
 
 Usage:
     ttime <flags> [command] [command args]
@@ -362,14 +363,6 @@ read_entire_file(Mem_Arena *temp_arena, File_Stats *file, Buffer *buffer) {
             ssize_t res = read(fd, buffer->data, buffer->cap);
             if (res >= 0) {
                 buffer->data_count = cast(usize, res);
-                // NOTE(dgl): usually files end with a 0 byte (EOF). Here we remove it because
-                // we use our data_count to indicate the end of the
-                // TODO(dgl): somehow this prevents to add an additional \n on start/cont if. This needs
-                // debugging
-                char *cursor = cast(char *, buffer->data);
-                if (cursor[buffer->data_count] == 0) {
-                    buffer->data_count--;
-                }
             } else {
                 buffer->data_count = 0;
                 LOG("Failed to read file %s", string_to_c_str(temp_arena, file->filename));
