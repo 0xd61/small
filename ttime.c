@@ -319,11 +319,11 @@ usize get_rdtsc(){
 //
 
 internal Buffer
-allocate_filebuffer(Mem_Arena *arena, File_Stats *file, usize padding) {
+allocate_filebuffer(Mem_Arena *arena, File_Stats *file) {
     Buffer result = {};
     if (file->exists) {
         result.data_count = 0;
-        result.cap = file->filesize + padding;
+        result.cap = file->filesize;
 
         // TODO(dgl): push padding separately
         LOG_DEBUG("Allocating memory for %lu bytes (filesize with padding)", result.cap);
@@ -1647,7 +1647,7 @@ int main(int argc, char** argv) {
         switch(cmdline.command_type) {
             // TODO(dgl): almost equal with continue. Can be reduced and refactored
             case Command_Type_Start: {
-                Buffer buffer = allocate_filebuffer(&permanent_arena, &cmdline.file, 0);
+                Buffer buffer = allocate_filebuffer(&permanent_arena, &cmdline.file);
                 read_entire_file(&transient_arena, &cmdline.file, &buffer);
 
                 Tokenizer tokenizer = {};
@@ -1671,7 +1671,7 @@ int main(int argc, char** argv) {
                 }
             } break;
             case Command_Type_Continue: {
-                Buffer buffer = allocate_filebuffer(&permanent_arena, &cmdline.file, 0);
+                Buffer buffer = allocate_filebuffer(&permanent_arena, &cmdline.file);
                 read_entire_file(&transient_arena, &cmdline.file, &buffer);
 
                 Tokenizer tokenizer = {};
@@ -1699,7 +1699,7 @@ int main(int argc, char** argv) {
                 }
             } break;
             case Command_Type_Stop: {
-                Buffer buffer = allocate_filebuffer(&permanent_arena, &cmdline.file, 0);
+                Buffer buffer = allocate_filebuffer(&permanent_arena, &cmdline.file);
                 read_entire_file(&transient_arena, &cmdline.file, &buffer);
 
                 Tokenizer tokenizer = {};
@@ -1733,7 +1733,7 @@ int main(int argc, char** argv) {
                 }
             } break;
             case Command_Type_Report: {
-                Buffer buffer = allocate_filebuffer(&permanent_arena, &cmdline.file, 0);
+                Buffer buffer = allocate_filebuffer(&permanent_arena, &cmdline.file);
                 read_entire_file(&transient_arena, &cmdline.file, &buffer);
                 Tokenizer tokenizer = {};
                 fill_tokenizer(&tokenizer, &buffer);
