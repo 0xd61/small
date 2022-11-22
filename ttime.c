@@ -12,7 +12,6 @@ Example:
 
 TODO(dgl):
     - Better printing (log vs output)
-    - Add one newline too much on start/cont after a comment
 
 Usage:
     ttime <flags> [command] [command args]
@@ -433,7 +432,6 @@ write_entire_file(Mem_Arena *arena, File_Stats *file, int buffer_count, ...) {
 internal Buffer
 entry_to_buffer(Mem_Arena *arena, Entry *entry) {
     String_Builder builder = string_builder_init(arena, sizeof(char) * 80);
-    string_append(&builder, "\n");
     string_append(&builder, "%04d-%02d-%02dT%02d:%02d:%02d%c%02d:%02d:%02d | ",
                            entry->begin.year,
                            entry->begin.month,
@@ -962,7 +960,9 @@ get_last_line_offset(Tokenizer *tokenizer) {
             ) {
             offset--;
         } else {
-            result = tokenizer->input.length + offset;
+            // NOTE(dgl): + 1 to be after the newline
+            // TODO(dgl): needs verification
+            result = tokenizer->input.length + offset + 1;
         }
     }
 
@@ -1713,11 +1713,6 @@ int main(int argc, char** argv) {
                     } else {
                         last_entry.end = get_timestamp();
                         Buffer entry_buffer = entry_to_buffer(&transient_arena, &last_entry);
-                        // NOTE(dgl): the last entry starts at the newline but to write the entry we must start one byte before.
-                        // However what if we
-                        if (*(cast(char *, buffer.data) + last_line_offset - 1) == '\n') {
-                            last_line_offset--;
-                        }
 
                         // NOTE(dgl): we try to overwrite the last entry in our buffer with the updated info.
                         // if the space in our buffer is too small we write the data that fits and
