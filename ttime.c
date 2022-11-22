@@ -11,8 +11,6 @@ Example:
 2022-03-08T01:38:00+00:00 | 2022-03-08T01:38:00+00:00 | taskID (-1 if no task specified) | other annotations
 
 TODO(dgl):
-    - Parsing error on start and cont when last line was a comment
-    - Parsing error in report, when last line was empty
     - Better printing (log vs output)
 
 Usage:
@@ -241,8 +239,8 @@ print_datetime(Mem_Arena *arena, int32 flags, char *fmt, ...) {
     Mem_Temp_Arena tmp_arena = mem_arena_begin_temp(arena);
     {
         usize fmt_len = string_length(fmt);
-        char *cursor = mem_arena_push_array(tmp_arena.arena, char, fmt_len + 1);
-        string_copy(fmt, fmt_len, cursor, fmt_len + 1);
+        char *cursor = mem_arena_push_array(tmp_arena.arena, char, fmt_len);
+        string_copy(fmt, fmt_len, cursor, fmt_len);
 
         String_Builder builder = string_builder_init(tmp_arena.arena, 128);
 
@@ -366,6 +364,8 @@ read_entire_file(Mem_Arena *temp_arena, File_Stats *file, Buffer *buffer) {
                 buffer->data_count = cast(usize, res);
                 // NOTE(dgl): usually files end with a 0 byte (EOF). Here we remove it because
                 // we use our data_count to indicate the end of the
+                // TODO(dgl): somehow this prevents to add an additional \n on start/cont if. This needs
+                // debugging
                 char *cursor = cast(char *, buffer->data);
                 if (cursor[buffer->data_count] == 0) {
                     buffer->data_count--;
@@ -1352,10 +1352,11 @@ commandline_parse_start_cmd(Commandline *ctx, char** args, int args_count) {
 
         char *dest = ctx->start.annotation.text;
         cursor = start_count;
+        // NOTE(dgl): each annotation is a separate arg therefore we concat them and add a space between
         while(cursor < args_count) {
             char *annotation = args[cursor++];
             usize length = string_length(annotation);
-            string_copy(annotation, length, dest, length + 1);
+            string_copy(annotation, length, dest, length);
             dest += length;
             *dest++ = ' ';
         }
@@ -1379,7 +1380,7 @@ commandline_parse_test_cmd(Commandline *ctx, char** args, int args_count) {
                 String *filter = ctx->report.filter + ctx->report.filter_count;
                 usize length = string_length(arg);
                 filter->length = length;
-                filter->cap = length + 1;
+                filter->cap = length;
                 filter->text = arg;
                 ctx->report.filter_count++;
             } else {
@@ -1416,7 +1417,7 @@ commandline_parse_report_cmd(Commandline *ctx, char** args, int args_count) {
                 String *filter = ctx->report.filter + ctx->report.filter_count;
                 usize length = string_length(arg);
                 filter->length = length;
-                filter->cap = length + 1;
+                filter->cap = length;
                 filter->text = arg;
                 ctx->report.filter_count++;
             } else {

@@ -37,10 +37,6 @@ string_length(char *string) {
         count++;
     }
 
-    count -= 1;
-
-    // NOTE(dgl): should return one char before nullbyte
-    assert(begin[count] != '\0' && begin[count + 1] == '\0', "Not a valid cstring");
     return count;
 }
 
@@ -48,9 +44,9 @@ internal inline char *
 string_to_c_str(Mem_Arena *arena, String s) {
     assert(s.text != 0, "String text is not defined");
 
-    char *text = mem_arena_push_array(arena, char, s.length + 1);
-    string_copy(s.text, s.length, text, s.length + 1);
-    text[s.length + 1] = 0;
+    char *text = mem_arena_push_array(arena, char, s.length);
+    string_copy(s.text, s.length, text, s.length);
+    text[s.length] = 0;
 
     return text;
 }
@@ -62,25 +58,29 @@ string_to_c_str(Mem_Arena *arena, String s) {
 internal void
 string_copy(char *src, size_t src_count, char *dest, size_t dest_count) {
     // NOTE(dgl): Must be one larger for nullbyte
-    assert(dest_count > src_count, "String overflow. Increase string size");
+    assert(dest_count >= src_count, "String overflow. Increase string size");
+
+    char *sentinel = dest + dest_count;
 
     for(int index = 0; index < src_count; ++index) {
         *dest++ = *src++;
     }
+
     // TODO(dgl): is this necessary?
     // This should only be done when using cstrings. We should replace the string copy parameter
     // by strings and create a mem_copy function for everything else.
     *dest = '\0';
+    assert(dest <= sentinel, "Overflow");
 }
 
 internal String
 string_from_c_str(char *s) {
     String result = {};
     result.length = string_length(s);
-    result.cap = result.length + 1;
+    result.cap = result.length;
     result.text = s;
 
-    assert(result.text[result.cap] == '\0', "Not a valid cstring");
+    assert(result.text[result.length] == '\0', "Not a valid cstring");
 
     return result;
 }
