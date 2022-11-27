@@ -783,7 +783,7 @@ parse_entry_meta(Tokenizer *tokenizer) {
         result.line = tokenizer->line;
 
         int64 length = tokenizer->input.text - pos;
-        assert(length >= 0, "Invalid entry legnth")
+        assert(length >= 0, "Invalid entry legnth");
         result.length = cast(usize, length);
     }
 

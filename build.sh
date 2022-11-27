@@ -22,7 +22,7 @@ CommonCompilerFlags="-O0 -g -ggdb -fdiagnostics-color=always -fno-rtti -fno-exce
 -Wno-error=unused-command-line-argument"
 
 CommonDefines="-DDEBUG=1"
-CommonLinkerFlags="-Wl,--gc-sections -nostdinc++ -ldl"
+CommonLinkerFlags="-Wl,--gc-sections -nostdinc++"
 
 fetch() {
     echo "Fetching dependencies"
