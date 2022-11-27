@@ -12,7 +12,7 @@ DEPLOY_DIR="${BASE_DIR}/../bin"
 # NOTE(dgl): check if tools are available
 [ -d "${BUILD_DIR}" ] || mkdir -p "${BUILD_DIR}"
 
-CommonCompilerFlags="-O0 -g -ggdb -fdiagnostics-color=always -fno-rtti -fno-exceptions -ffast-math -msse4.1 -msse2
+CommonCompilerFlags="-O3 -g -ggdb -fdiagnostics-color=always -fno-rtti -fno-exceptions -ffast-math -msse4.1 -msse2
 -Wall -Werror -Wconversion
 -Wno-writable-strings -Wno-gnu-anonymous-struct
 -Wno-padded -Wno-string-conversion
@@ -21,7 +21,7 @@ CommonCompilerFlags="-O0 -g -ggdb -fdiagnostics-color=always -fno-rtti -fno-exce
 -Wno-error=unused-function
 -Wno-error=unused-command-line-argument"
 
-CommonDefines="-DDEBUG=1"
+CommonDefines="-DDEBUG=0"
 CommonLinkerFlags="-Wl,--gc-sections -nostdinc++ -ldl"
 
 fetch() {

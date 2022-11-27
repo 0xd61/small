@@ -31,7 +31,6 @@ internal String string_builder_to_string(String_Builder *builder);
 
 internal inline usize
 string_length(char *string) {
-    char *begin = string;
     usize count = 0;
     while(*string++) {
         count++;

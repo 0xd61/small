@@ -375,25 +375,6 @@ read_entire_file(Mem_Arena *temp_arena, File_Stats *file, Buffer *buffer) {
     }
 }
 
-// NOTE(dgl): offset after last text character of last line of file
-internal usize
-get_end_of_file_offset(Buffer *buffer) {
-    usize result = 0;
-    char *input = cast(char *, buffer->data);
-    if (input) {
-        char *cursor = input + buffer->data_count;
-        while (cursor > input &&
-              (*cursor <= ' ')) {
-            cursor--;
-        }
-
-        assert(cursor > cast(char *, buffer->data), "Buffer overflow. Cursor cannot be larger than the data buffer");
-        result = cast(usize, cursor - cast(char *, buffer->data)) + 1; // +1 to go one byte after last text character
-    }
-
-    return result;
-}
-
 // NOTE(dgl): appends the different buffers.
 internal void
 write_entire_file(Mem_Arena *arena, File_Stats *file, int buffer_count, ...) {
@@ -411,7 +392,6 @@ write_entire_file(Mem_Arena *arena, File_Stats *file, int buffer_count, ...) {
 
         for (int index = 0; index < buffer_count; ++index) {
             Buffer *buffer = va_arg(buffers, Buffer *);
-            char *test = cast(char *, buffer->data);
             ssize_t res = write(fd, buffer->data, buffer->data_count);
             if (res < 0) {
                 LOG("Failed writing to file %s with error: %d", tmp_filename, errno);
@@ -593,7 +573,6 @@ eat_all_whitespace(Tokenizer *tokenizer) {
                 return;
             }
         } else if (c == '\n') {
-            char next_c = peek_character(tokenizer, 1);
             while(peek_next_character(tokenizer) == '\n' && tokenizer->input.length > 0) {
                 eat_next_character(tokenizer);
             }
@@ -612,7 +591,7 @@ parse_string_line(Tokenizer *tokenizer) {
     if (!tokenizer->has_error) {
         char *begin = tokenizer->input.text;
         char next = peek_next_character(tokenizer);
-        int32 length = 0;
+        uint32 length = 0;
         while(!(next == '\n' || next == 0)) {
             eat_next_character(tokenizer);
             next = peek_next_character(tokenizer);
@@ -802,7 +781,10 @@ parse_entry_meta(Tokenizer *tokenizer) {
         result.begin = datetime_to_epoch(&begin);
         result.buffer_pos = cast(uintptr, pos);
         result.line = tokenizer->line;
-        result.length = tokenizer->input.text - pos;
+
+        int64 length = tokenizer->input.text - pos;
+        assert(length >= 0, "Invalid entry legnth")
+        result.length = cast(usize, length);
     }
 
     return result;
@@ -920,7 +902,9 @@ get_last_line_offset(Tokenizer *tokenizer) {
         } else {
             // NOTE(dgl): + 1 to be after the newline
             // TODO(dgl): needs verification
-            result = tokenizer->input.length + offset + 1;
+            int64 last_line_offset = cast(int64, tokenizer->input.length) + offset + 1;
+            assert(last_line_offset >= 0, "Invalid last line offset");
+            result = cast(usize, last_line_offset);
         }
     }
 
@@ -1007,17 +991,20 @@ datetime_to_epoch(Datetime *datetime) {
                                     .tm_mon  = datetime->month - 1,
                                     .tm_year = datetime->year - 1900};
 
-	usize timestamp = mktime(&platform_datetime);
-    usize timezone_offset = (((datetime->offset_hour * 60) + datetime->offset_minute) * 60) + datetime->offset_second;
+	int64 timestamp = mktime(&platform_datetime);
+    if(timestamp >= 0) {
+        int64 timezone_offset = (((datetime->offset_hour * 60) + datetime->offset_minute) * 60) + datetime->offset_second;
 
-    if(datetime->offset_sign) {
-        assert(timezone_offset < timestamp, "Invalid timezone offset. Offset cannot be larger than the timestamp.");
-        timestamp += timezone_offset;
-    } else {
-        timestamp -= timezone_offset;
+        if(datetime->offset_sign) {
+            assert(timezone_offset < timestamp, "Invalid timezone offset. Offset cannot be larger than the timestamp.");
+            timestamp += timezone_offset;
+        } else {
+            timestamp -= timezone_offset;
+        }
+
+        assert(timestamp >= 0, "Invalid localized timestamp calculation");
+        result = cast(usize, timestamp);
     }
-
-    result = timestamp;
 
     return result;
 }
@@ -1068,8 +1055,8 @@ datetime_normalize(Datetime *datetime) {
     datetime->month += datetime_wrap(&datetime->day, 1, 31);
     datetime->year += datetime_wrap(&datetime->month, 1, 12);
 
-    // NOTE(dgl): fixing month (month_index go optimized out)
-    int32 month_index = (datetime->month - 3) % (array_count(days_in_month) - 1);
+    // NOTE(dgl): fixing month (month_index got optimized out)
+    int32 month_index = (datetime->month - 3) % (cast(int32, array_count(days_in_month)) - 1);
     int32 days = days_in_month[month_index];
     if (month_index == array_count(days_in_month) - 1 &&
         !_is_leap_year(datetime->year)) {
@@ -1234,15 +1221,12 @@ report_tag_matches(Commandline *ctx, Entry *entry) {
         buffer.cap = entry->annotation.cap;
         fill_tokenizer(&tokenizer, &buffer);
 
-        char *begin = 0;
-        int32 length = 0;
         while(!tokenizer.has_error && tokenizer.input.length > 0) {
             char next = peek_next_character(&tokenizer);
-            length++;
 
             if (next == '@' || next == '+') {
                 char *begin = tokenizer.input.text;
-                int32 length = 0;
+                uint32 length = 0;
                 while (!is_whitespace(next) && tokenizer.input.length > 0) {
                     eat_next_character(&tokenizer);
                     next = peek_next_character(&tokenizer);
@@ -1513,32 +1497,7 @@ commandline_parse(Mem_Arena *arena, Commandline *ctx, char** args, int args_coun
 //
 
 internal void
-sort_bubble(Sort_Entry *first, int32 entry_count) {
-    //
-    // NOTE(casey): This is the O(n^2) bubble sort
-    //
-    for(uint32 outer = 0; outer < entry_count; ++outer) {
-        bool32 list_is_sorted = true;
-        for(uint32 inner = 0; inner < (entry_count - 1); ++inner) {
-            Sort_Entry *entry_a = first + inner;
-            Sort_Entry *entry_b = entry_a + 1;
-
-            if(entry_a->sort_key > entry_b->sort_key) {
-                Sort_Entry temp = *entry_b;
-                *entry_b = *entry_a;
-                *entry_a = temp;
-                list_is_sorted = false;
-            }
-        }
-
-        if(list_is_sorted) {
-            break;
-        }
-    }
-}
-
-internal void
-sort_radix(Sort_Entry *first, Sort_Entry *temp, int32 entry_count) {
+sort_radix(Sort_Entry *first, Sort_Entry *temp, uint32 entry_count) {
     Sort_Entry *source = first;
     Sort_Entry *dest = temp;
     for(uint32 byte_index = 0; byte_index < 32; byte_index += 8) {
@@ -1646,9 +1605,6 @@ int main(int argc, char** argv) {
                         new_entry.task_id = last_entry.task_id;
                         new_entry.annotation = last_entry.annotation;
 
-                        // NOTE(dgl): cleanup buffer end
-                        //buffer.data_count = get_end_of_file_offset(&buffer);;
-
                         Buffer entry_buffer = entry_to_buffer(&transient_arena, &new_entry);
                         write_entire_file(&transient_arena, &cmdline.file, 2, &buffer, &entry_buffer);
                     }
@@ -1702,8 +1658,8 @@ int main(int argc, char** argv) {
                 LOG_DEBUG("To sentinel %lu", to_sentinel);
 
 
-                int32 entry_count = 0;
-                int32 max_entry_count = 100;
+                uint32 entry_count = 0;
+                uint32 max_entry_count = 100;
                 EntryMeta *entries = mem_arena_push_array(&transient_arena, EntryMeta, max_entry_count);
                 while(!tokenizer.has_error && tokenizer.input.length > 0) {
                     EntryMeta meta = parse_entry_meta(&tokenizer);
@@ -1711,7 +1667,7 @@ int main(int argc, char** argv) {
 
                     if (meta.begin > from_sentinel && meta.begin < to_sentinel) {
                         if (entry_count == max_entry_count) {
-                            int current_count = max_entry_count;
+                            usize current_count = max_entry_count;
                             max_entry_count *= 2;
                             entries = mem_arena_resize_array(&transient_arena, EntryMeta, entries, current_count, max_entry_count);
                         }
