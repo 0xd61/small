@@ -783,7 +783,7 @@ parse_entry_meta(Tokenizer *tokenizer) {
         result.line = tokenizer->line;
 
         int64 length = tokenizer->input.text - pos;
-        assert(length >= 0, "Invalid entry legnth");
+        assert(length >= 0, "Invalid entry length");
         result.length = cast(usize, length);
     }
 
@@ -1056,7 +1056,8 @@ datetime_normalize(Datetime *datetime) {
     datetime->year += datetime_wrap(&datetime->month, 1, 12);
 
     // NOTE(dgl): fixing month (month_index got optimized out)
-    int32 month_index = (datetime->month - 3) % (cast(int32, array_count(days_in_month)) - 1);
+    // we can have a negative month when subtracting 3 therefore we need to take the absolute value
+    int32 month_index = abs((datetime->month - 3) % (cast(int32, array_count(days_in_month)) - 1));
     int32 days = days_in_month[month_index];
     if (month_index == array_count(days_in_month) - 1 &&
         !_is_leap_year(datetime->year)) {
