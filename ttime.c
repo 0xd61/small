@@ -1681,74 +1681,77 @@ int main(int argc, char** argv) {
                     LOG("Tokenizer error: %s", tokenizer.error_msg);
                 }
 
+                if (entry_count > 0) {
+                    // NOTE(dgl): use different memory layout if too slow. @performance
+                    Sort_Entry *sort_entries = mem_arena_push_array(&permanent_arena, Sort_Entry, entry_count);
+                    for (int32 index = 0; index < entry_count; ++index) {
+                        Sort_Entry *sort = sort_entries + index;
+                        EntryMeta *meta = entries + index;
 
-                // NOTE(dgl): use different memory layout if too slow. @performance
-                Sort_Entry *sort_entries = mem_arena_push_array(&permanent_arena, Sort_Entry, entry_count);
-                for (int32 index = 0; index < entry_count; ++index) {
-                    Sort_Entry *sort = sort_entries + index;
-                    EntryMeta *meta = entries + index;
+                        // NOTE(dgl): @performance we could also use an offset of now to be able to use 32bit integers.
+                        // This would decrease the passes on the radix sort. It should be fine with the offset, because
+                        // the seconds of one year do not surpass a 32bit integer
 
-                    // NOTE(dgl): @performance we could also use an offset of now to be able to use 32bit integers.
-                    // This would decrease the passes on the radix sort. It should be fine with the offset, because
-                    // the seconds of one year do not surpass a 32bit integer
+                        assert(from_sentinel < meta->begin, "begin cannot be in the future, for sorting");
+                        sort->sort_key = cast(uint32, meta->begin - from_sentinel);
+                        sort->index = index;
+                    }
 
-                    assert(from_sentinel < meta->begin, "begin cannot be in the future, for sorting");
-                    sort->sort_key = cast(uint32, meta->begin - from_sentinel);
-                    sort->index = index;
-                }
-
-                Mem_Temp_Arena tmp_arena = mem_arena_begin_temp(&transient_arena);
-                {
-                    Sort_Entry *sort_memory = mem_arena_push_array(tmp_arena.arena, Sort_Entry, entry_count);
-                    sort_radix(sort_entries, sort_memory, entry_count);
-                }
-                mem_arena_end_temp(tmp_arena);
+                    Mem_Temp_Arena tmp_arena = mem_arena_begin_temp(&transient_arena);
+                    {
+                        Sort_Entry *sort_memory = mem_arena_push_array(tmp_arena.arena, Sort_Entry, entry_count);
+                        sort_radix(sort_entries, sort_memory, entry_count);
+                    }
+                    mem_arena_end_temp(tmp_arena);
 
 #if DEBUG
-                 for (int32 index = 0; index < entry_count - 1; ++index) {
-                    Sort_Entry *a = sort_entries + index;
-                    Sort_Entry *b = a + 1;
+                     for (int32 index = 0; index < entry_count - 1; ++index) {
+                        Sort_Entry *a = sort_entries + index;
+                        Sort_Entry *b = a + 1;
 
-                    assert(a->sort_key <= b->sort_key, "Array not correctly sorted at index %d - a: %d, b: %d", index, a->sort_key, b->sort_key);
-                }
+                        assert(a->sort_key <= b->sort_key, "Array not correctly sorted at index %d - a: %d, b: %d", index, a->sort_key, b->sort_key);
+                    }
 #endif
 
-                usize total_seconds = 0;
-                usize daily_seconds = 0;
-                int32 last_day = 0;
-                // TODO(dgl): use info from entry array to determine what is printed
-                int32 print_flags = Print_Timezone;
-                for (int32 index = 0; index < entry_count; ++index) {
-                    EntryMeta *meta = entries + sort_entries[index].index;
+                    usize total_seconds = 0;
+                    usize daily_seconds = 0;
+                    int32 last_day = 0;
+                    // TODO(dgl): use info from entry array to determine what is printed
+                    int32 print_flags = Print_Timezone;
+                    for (int32 index = 0; index < entry_count; ++index) {
+                        EntryMeta *meta = entries + sort_entries[index].index;
 
-                    Entry entry = parse_entry_from_meta(&tokenizer, meta);
+                        Entry entry = parse_entry_from_meta(&tokenizer, meta);
 
-                    if (report_tag_matches(&cmdline, &entry)) {
-                        if (entry.end.year == 0) { entry.end = get_timestamp(); }
-                        usize end = datetime_to_epoch(&entry.end);
-                        assert(meta->begin < end, "End time cannot be larger than begin time");
-                        usize difftime = end - meta->begin;
+                        if (report_tag_matches(&cmdline, &entry)) {
+                            if (entry.end.year == 0) { entry.end = get_timestamp(); }
+                            usize end = datetime_to_epoch(&entry.end);
+                            assert(meta->begin < end, "End time cannot be larger than begin time");
+                            usize difftime = end - meta->begin;
 
-                        total_seconds += difftime;
+                            total_seconds += difftime;
 
-                        if (entry.begin.day != last_day && last_day > 0) {
-                            print_datetime(&transient_arena, print_flags, "\t\t%th hs\n", daily_seconds);
-                            daily_seconds = 0;
+                            if (entry.begin.day != last_day && last_day > 0) {
+                                print_datetime(&transient_arena, print_flags, "\t\t%th hs\n", daily_seconds);
+                                daily_seconds = 0;
+                            }
+
+                            if (daily_seconds == 0) {
+                                print_datetime(&transient_arena, print_flags, "%td\t", entry.begin);
+                            }
+
+                            daily_seconds += difftime;
+                            last_day = entry.begin.day;
+
+                            print_datetime(&transient_arena, print_flags, "\n\t%tt - %tt => \t %th hs", entry.begin, entry.end, difftime, entry.annotation);
                         }
-
-                        if (daily_seconds == 0) {
-                            print_datetime(&transient_arena, print_flags, "%td\t", entry.begin);
-                        }
-
-                        daily_seconds += difftime;
-                        last_day = entry.begin.day;
-
-                        print_datetime(&transient_arena, print_flags, "\n\t%tt - %tt => \t %th hs", entry.begin, entry.end, difftime, entry.annotation);
                     }
-                }
 
-                print_datetime(&transient_arena, print_flags, "\t\t%th hs\n\n", daily_seconds);
-                print_datetime(&transient_arena, print_flags, "Total hours: %th hs\n", total_seconds);
+                    print_datetime(&transient_arena, print_flags, "\t\t%th hs\n\n", daily_seconds);
+                    print_datetime(&transient_arena, print_flags, "Total hours: %th hs\n", total_seconds);
+                } else {
+                    LOG("No entry found.");
+                }
             } break;
             case Command_Type_CSV: {
                 LOG("Not yet implemented");
